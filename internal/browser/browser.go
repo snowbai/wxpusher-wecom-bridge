@@ -53,6 +53,27 @@ func NewFetcher(cfg Config) *Fetcher {
 
 var urlRE = regexp.MustCompile(`https?://[^\s<>"']+`)
 
+var specialUseAddrPrefixes = []netip.Prefix{
+	mustAddrPrefix("100.64.0.0/10"),
+	mustAddrPrefix("192.0.0.0/24"),
+	mustAddrPrefix("192.0.2.0/24"),
+	mustAddrPrefix("198.51.100.0/24"),
+	mustAddrPrefix("203.0.113.0/24"),
+	mustAddrPrefix("198.18.0.0/15"),
+	mustAddrPrefix("0.0.0.0/8"),
+	mustAddrPrefix("240.0.0.0/4"),
+	mustAddrPrefix("2001:db8::/32"),
+	mustAddrPrefix("100::/64"),
+}
+
+func mustAddrPrefix(prefix string) netip.Prefix {
+	parsed, err := netip.ParsePrefix(prefix)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
+
 func ExtractURLs(text string) []string {
 	matches := urlRE.FindAllString(text, -1)
 	urls := make([]string, 0, len(matches))
@@ -159,6 +180,11 @@ func validateResolvedAddr(addr netip.Addr) error {
 	}
 	if !addr.IsGlobalUnicast() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
 		return fmt.Errorf("fetch URL IP %s is not allowed", addr)
+	}
+	for _, prefix := range specialUseAddrPrefixes {
+		if prefix.Contains(addr) {
+			return fmt.Errorf("fetch URL IP %s is not allowed", addr)
+		}
 	}
 	return nil
 }

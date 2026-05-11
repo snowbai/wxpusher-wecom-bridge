@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"net"
+	"net/netip"
 	"reflect"
 	"testing"
 )
@@ -99,6 +100,52 @@ func TestValidateFetchURLRejectsUnsafeIPv6Literals(t *testing.T) {
 				t.Fatalf("validateFetchURLWithResolver(%q) error = nil, want error", input)
 			}
 		})
+	}
+}
+
+func TestValidateFetchURLWithResolverRejectsUnsafeIPv6Hostnames(t *testing.T) {
+	tests := []string{
+		"::1",
+		"fe80::1",
+		"fd00::1",
+	}
+
+	for _, resolved := range tests {
+		t.Run(resolved, func(t *testing.T) {
+			if err := validateFetchURLWithResolver(context.Background(), "https://ipv6.test/a", staticResolver(resolved)); err == nil {
+				t.Fatalf("validateFetchURLWithResolver() error = nil for resolved %q, want error", resolved)
+			}
+		})
+	}
+}
+
+func TestValidateResolvedAddrRejectsSpecialUseRanges(t *testing.T) {
+	tests := []string{
+		"100.64.0.1",
+		"192.0.0.1",
+		"192.0.2.1",
+		"198.51.100.1",
+		"203.0.113.1",
+		"198.18.0.1",
+		"0.1.2.3",
+		"240.0.0.1",
+		"2001:db8::1",
+		"100::1",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			addr := netip.MustParseAddr(input)
+			if err := validateResolvedAddr(addr); err == nil {
+				t.Fatalf("validateResolvedAddr(%s) error = nil, want error", input)
+			}
+		})
+	}
+}
+
+func TestValidateResolvedAddrAcceptsPublicAddress(t *testing.T) {
+	if err := validateResolvedAddr(netip.MustParseAddr("93.184.216.34")); err != nil {
+		t.Fatalf("validateResolvedAddr() error = %v, want nil", err)
 	}
 }
 
