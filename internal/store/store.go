@@ -60,12 +60,14 @@ type EnrichmentTask struct {
 }
 
 type Enrichment struct {
-	MessageID  int64
-	URL        string
-	Title      string
-	Summary    string
-	Screenshot string
-	CreatedAt  time.Time
+	MessageID   int64
+	URL         string
+	Title       string
+	Summary     string
+	Screenshot  string
+	Status      string
+	CreatedAt   time.Time
+	CompletedAt time.Time
 }
 
 type AppEvent struct {

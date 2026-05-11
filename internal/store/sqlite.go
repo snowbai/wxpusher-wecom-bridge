@@ -70,7 +70,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			last_error TEXT NOT NULL,
 			response_body TEXT NOT NULL,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			UNIQUE(message_id, kind, payload)
 		)`,
 		`CREATE TABLE IF NOT EXISTS enrichment_tasks (
 			id INTEGER PRIMARY KEY,
@@ -91,7 +92,9 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			title TEXT NOT NULL,
 			summary TEXT NOT NULL,
 			screenshot_path TEXT NOT NULL,
+			content_status TEXT NOT NULL,
 			created_at TEXT NOT NULL,
+			completed_at TEXT NOT NULL,
 			UNIQUE(message_id, url)
 		)`,
 		`CREATE TABLE IF NOT EXISTS app_events (
@@ -106,7 +109,43 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := s.ensureColumn(ctx, "enrichments", "content_status", `ALTER TABLE enrichments ADD COLUMN content_status TEXT NOT NULL DEFAULT 'done'`); err != nil {
+		return err
+	}
+	if err := s.ensureColumn(ctx, "enrichments", "completed_at", `ALTER TABLE enrichments ADD COLUMN completed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS delivery_attempts_unique_task ON delivery_attempts(message_id, kind, payload)`); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *SQLiteStore) ensureColumn(ctx context.Context, table, column, alterSQL string) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, alterSQL)
+	return err
 }
 
 func (s *SQLiteStore) SaveIdentity(ctx context.Context, id identity.Identity) error {
@@ -147,10 +186,7 @@ func (s *SQLiteStore) LoadIdentity(ctx context.Context) (identity.Identity, bool
 }
 
 func (s *SQLiteStore) SaveMessage(ctx context.Context, msg Message) (SaveMessageResult, error) {
-	dedupeKey := msg.DedupeKey
-	if dedupeKey == "" {
-		dedupeKey = messageDedupeKey(msg)
-	}
+	dedupeKey := messageDedupeKey(msg)
 	if msg.ReceivedAt.IsZero() {
 		msg.ReceivedAt = time.Now().UTC()
 	}
@@ -186,17 +222,19 @@ func (s *SQLiteStore) EnqueueDelivery(ctx context.Context, task DeliveryTask) (i
 	if task.NextAttempt.IsZero() {
 		task.NextAttempt = now
 	}
-	if task.Status == "" {
-		task.Status = TaskStatusPending
-	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO delivery_attempts
+	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO delivery_attempts
 		(message_id, kind, payload, status, attempts, next_attempt_at, last_error, response_body, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.MessageID, task.Kind, task.Payload, task.Status, task.Attempts, encodeTime(task.NextAttempt), task.LastError, "", encodeTime(now), encodeTime(now))
+		task.MessageID, task.Kind, task.Payload, TaskStatusPending, task.Attempts, encodeTime(task.NextAttempt), task.LastError, "", encodeTime(now), encodeTime(now))
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	if rows, err := res.RowsAffected(); err == nil && rows == 1 {
+		return res.LastInsertId()
+	}
+	var id int64
+	err = s.db.QueryRowContext(ctx, `SELECT id FROM delivery_attempts WHERE message_id = ? AND kind = ? AND payload = ?`, task.MessageID, task.Kind, task.Payload).Scan(&id)
+	return id, err
 }
 
 func (s *SQLiteStore) ClaimDeliveryTasks(ctx context.Context, limit int, now time.Time) ([]DeliveryTask, error) {
@@ -291,18 +329,27 @@ func (s *SQLiteStore) ClaimEnrichmentTasks(ctx context.Context, limit int, now t
 }
 
 func (s *SQLiteStore) SaveEnrichment(ctx context.Context, enrichment Enrichment) error {
+	now := time.Now().UTC()
+	if enrichment.Status == "" {
+		enrichment.Status = string(TaskStatusDone)
+	}
 	if enrichment.CreatedAt.IsZero() {
-		enrichment.CreatedAt = time.Now().UTC()
+		enrichment.CreatedAt = now
+	}
+	if enrichment.CompletedAt.IsZero() {
+		enrichment.CompletedAt = now
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO enrichments
-		(message_id, url, title, summary, screenshot_path, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		(message_id, url, title, summary, screenshot_path, content_status, created_at, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(message_id, url) DO UPDATE SET
 			title = excluded.title,
 			summary = excluded.summary,
 			screenshot_path = excluded.screenshot_path,
-			created_at = excluded.created_at`,
-		enrichment.MessageID, enrichment.URL, enrichment.Title, enrichment.Summary, enrichment.Screenshot, encodeTime(enrichment.CreatedAt))
+			content_status = excluded.content_status,
+			created_at = excluded.created_at,
+			completed_at = excluded.completed_at`,
+		enrichment.MessageID, enrichment.URL, enrichment.Title, enrichment.Summary, enrichment.Screenshot, enrichment.Status, encodeTime(enrichment.CreatedAt), encodeTime(enrichment.CompletedAt))
 	return err
 }
 
