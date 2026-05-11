@@ -54,7 +54,7 @@ func TestHandleMessagePersistsAndQueues(t *testing.T) {
 		t.Fatalf("HandleMessage() error = %v", err)
 	}
 
-	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, now)
+	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
@@ -69,7 +69,7 @@ func TestHandleMessagePersistsAndQueues(t *testing.T) {
 		t.Fatalf("delivery payload = %q, want %q", deliveries[0].Payload, wantPayload)
 	}
 
-	enrichments, err := st.ClaimEnrichmentTasks(ctx, 10, now)
+	enrichments, err := st.ClaimEnrichmentTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
 	}
@@ -101,14 +101,14 @@ func TestHandleMessageDuplicateDoesNotEnqueueDuplicateTasks(t *testing.T) {
 		t.Fatalf("second HandleMessage() error = %v", err)
 	}
 
-	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, now)
+	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
 	if len(deliveries) != 1 {
 		t.Fatalf("delivery tasks = %d, want 1", len(deliveries))
 	}
-	enrichments, err := st.ClaimEnrichmentTasks(ctx, 10, now)
+	enrichments, err := st.ClaimEnrichmentTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
 	}
@@ -195,7 +195,7 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	if err := svc.HandleMessage(ctx, IncomingMessage{QID: "q-enrich", MsgType: 20001, Content: "see https://example.com", ReceivedAt: now}); err != nil {
 		t.Fatalf("HandleMessage() error = %v", err)
 	}
-	tasks, err := st.ClaimEnrichmentTasks(ctx, 10, now)
+	tasks, err := st.ClaimEnrichmentTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
 	}
@@ -223,6 +223,104 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	}
 }
 
+func TestEnrichmentWorkerDoesNotMarkDoneWhenEnrichedDeliveryEnqueueFails(t *testing.T) {
+	ctx := context.Background()
+	st := &enrichmentEnqueueFailStore{enqueueErr: errors.New("enqueue failed")}
+	svc := New(st, nil, &fakeFetcher{result: EnrichmentResult{Title: "Example", Summary: "summary"}}, Config{EnrichmentMaxAttempts: 2})
+	task := store.EnrichmentTask{ID: 7, MessageID: 42, URL: "https://example.com"}
+
+	if err := svc.processEnrichmentTask(ctx, task); err != nil {
+		t.Fatalf("processEnrichmentTask() error = %v, want handled retry", err)
+	}
+	if st.markDoneCalls != 0 {
+		t.Fatalf("MarkEnrichmentDone calls = %d, want 0", st.markDoneCalls)
+	}
+	if st.retryCalls != 1 {
+		t.Fatalf("MarkEnrichmentRetry calls = %d, want 1", st.retryCalls)
+	}
+	if st.retryAttempts != 1 {
+		t.Fatalf("retry attempts = %d, want 1", st.retryAttempts)
+	}
+}
+
+func TestProcessDeliveryOncePreCanceledContextDoesNotClaim(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	st := &claimCountingStore{}
+	svc := New(st, &fakeSender{}, nil, Config{})
+
+	err := svc.processDeliveryOnce(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processDeliveryOnce() error = %v, want context.Canceled", err)
+	}
+	if st.deliveryClaims != 0 {
+		t.Fatalf("delivery claims = %d, want 0", st.deliveryClaims)
+	}
+}
+
+func TestProcessEnrichmentOncePreCanceledContextDoesNotClaim(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	st := &claimCountingStore{}
+	svc := New(st, nil, &fakeFetcher{}, Config{})
+
+	err := svc.processEnrichmentOnce(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("processEnrichmentOnce() error = %v, want context.Canceled", err)
+	}
+	if st.enrichmentClaims != 0 {
+		t.Fatalf("enrichment claims = %d, want 0", st.enrichmentClaims)
+	}
+}
+
+func TestNextAttemptCapsFirstRetryWhenInitialBackoffExceedsMax(t *testing.T) {
+	svc := New(nil, nil, nil, Config{InitialBackoff: 10 * time.Second, MaxBackoff: 2 * time.Second})
+	before := time.Now().UTC()
+	next := svc.nextAttempt(1)
+	delay := next.Sub(before)
+	if delay < 1500*time.Millisecond || delay > 2500*time.Millisecond {
+		t.Fatalf("first retry delay = %s, want about 2s", delay)
+	}
+}
+
+func TestHandleMessageFutureReceivedAtDoesNotDelayQueuedTasks(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	svc := New(st, nil, nil, Config{})
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour)
+
+	if err := svc.HandleMessage(ctx, IncomingMessage{QID: "q-future", MsgType: 20001, Content: "hello https://example.com", ReceivedAt: future}); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+
+	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
+	}
+	if len(deliveries) != 1 {
+		t.Fatalf("delivery tasks = %d, want 1", len(deliveries))
+	}
+	enrichments, err := st.ClaimEnrichmentTasks(ctx, 10, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
+	}
+	if len(enrichments) != 1 {
+		t.Fatalf("enrichment tasks = %d, want 1", len(enrichments))
+	}
+}
+
+func TestHandleMessageNilStoreReturnsError(t *testing.T) {
+	svc := New(nil, nil, nil, Config{})
+	err := svc.HandleMessage(context.Background(), IncomingMessage{QID: "q-nil", Content: "hello"})
+	if err == nil {
+		t.Fatal("HandleMessage() error = nil, want missing store error")
+	}
+	if !strings.Contains(err.Error(), "store") {
+		t.Fatalf("HandleMessage() error = %v, want store error", err)
+	}
+}
+
 func TestWorkersRequireDependencies(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
@@ -233,6 +331,53 @@ func TestWorkersRequireDependencies(t *testing.T) {
 	if err := New(st, nil, nil, Config{}).RunEnrichmentWorker(ctx, time.Millisecond); err == nil {
 		t.Fatal("RunEnrichmentWorker() error = nil, want missing fetcher error")
 	}
+}
+
+type enrichmentEnqueueFailStore struct {
+	store.Store
+	enqueueErr    error
+	markDoneCalls int
+	retryCalls    int
+	retryAttempts int
+}
+
+func (s *enrichmentEnqueueFailStore) SaveEnrichment(context.Context, store.Enrichment) error {
+	return nil
+}
+
+func (s *enrichmentEnqueueFailStore) EnqueueDelivery(context.Context, store.DeliveryTask) (int64, error) {
+	return 0, s.enqueueErr
+}
+
+func (s *enrichmentEnqueueFailStore) MarkEnrichmentDone(context.Context, int64) error {
+	s.markDoneCalls++
+	return nil
+}
+
+func (s *enrichmentEnqueueFailStore) MarkEnrichmentRetry(_ context.Context, _ int64, attempts int, _ time.Time, _ string) error {
+	s.retryCalls++
+	s.retryAttempts = attempts
+	return nil
+}
+
+func (s *enrichmentEnqueueFailStore) MarkEnrichmentFailed(context.Context, int64, string) error {
+	return nil
+}
+
+type claimCountingStore struct {
+	store.Store
+	deliveryClaims   int
+	enrichmentClaims int
+}
+
+func (s *claimCountingStore) ClaimDeliveryTasks(context.Context, int, time.Time) ([]store.DeliveryTask, error) {
+	s.deliveryClaims++
+	return nil, nil
+}
+
+func (s *claimCountingStore) ClaimEnrichmentTasks(context.Context, int, time.Time) ([]store.EnrichmentTask, error) {
+	s.enrichmentClaims++
+	return nil, nil
 }
 
 func openTestStore(t *testing.T) *store.SQLiteStore {

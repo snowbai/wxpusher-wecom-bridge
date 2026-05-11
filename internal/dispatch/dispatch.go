@@ -65,6 +65,9 @@ func New(st store.Store, sender Sender, fetcher Fetcher, cfg Config) *Service {
 }
 
 func (s *Service) HandleMessage(ctx context.Context, msg IncomingMessage) error {
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
+	}
 	saved, err := s.store.SaveMessage(ctx, store.Message{
 		QID:        msg.QID,
 		MsgType:    msg.MsgType,
@@ -79,12 +82,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg IncomingMessage) error 
 		return nil
 	}
 
-	now := msg.ReceivedAt
-	if now.IsZero() {
-		now = time.Now().UTC()
-	} else {
-		now = now.UTC()
-	}
+	now := time.Now().UTC()
 	payload := wecom.BuildOriginalMarkdown(msg.QID, msg.Content).Content
 	if _, err := s.store.EnqueueDelivery(ctx, store.DeliveryTask{
 		MessageID:   saved.ID,
@@ -108,8 +106,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg IncomingMessage) error 
 }
 
 func (s *Service) RunDeliveryWorker(ctx context.Context, pollInterval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.sender == nil {
 		return errors.New("dispatch delivery worker requires sender")
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
 	}
 	if pollInterval <= 0 {
 		pollInterval = time.Second
@@ -122,15 +126,21 @@ func (s *Service) RunDeliveryWorker(ctx context.Context, pollInterval time.Durat
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
 func (s *Service) RunEnrichmentWorker(ctx context.Context, pollInterval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.fetcher == nil {
 		return errors.New("dispatch enrichment worker requires fetcher")
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
 	}
 	if pollInterval <= 0 {
 		pollInterval = time.Second
@@ -143,18 +153,27 @@ func (s *Service) RunEnrichmentWorker(ctx context.Context, pollInterval time.Dur
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return ctx.Err()
 		case <-timer.C:
 		}
 	}
 }
 
 func (s *Service) processDeliveryOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
+	}
 	tasks, err := s.store.ClaimDeliveryTasks(ctx, defaultClaimLimit, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := s.processDeliveryTask(ctx, task); err != nil {
 			return err
 		}
@@ -163,8 +182,14 @@ func (s *Service) processDeliveryOnce(ctx context.Context) error {
 }
 
 func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTask) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.sender == nil {
 		return errors.New("dispatch delivery worker requires sender")
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
 	}
 	if err := s.sender.SendMarkdown(ctx, task.Payload); err != nil {
 		nextAttempts := task.Attempts + 1
@@ -177,11 +202,20 @@ func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTa
 }
 
 func (s *Service) processEnrichmentOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
+	}
 	tasks, err := s.store.ClaimEnrichmentTasks(ctx, defaultClaimLimit, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	for _, task := range tasks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := s.processEnrichmentTask(ctx, task); err != nil {
 			return err
 		}
@@ -190,8 +224,14 @@ func (s *Service) processEnrichmentOnce(ctx context.Context) error {
 }
 
 func (s *Service) processEnrichmentTask(ctx context.Context, task store.EnrichmentTask) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.fetcher == nil {
 		return errors.New("dispatch enrichment worker requires fetcher")
+	}
+	if s.store == nil {
+		return errors.New("dispatch service requires store")
 	}
 	result, err := s.fetcher.Fetch(ctx, task.URL)
 	if err != nil {
@@ -213,9 +253,6 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 	}); err != nil {
 		return err
 	}
-	if err := s.store.MarkEnrichmentDone(ctx, task.ID); err != nil {
-		return err
-	}
 	payload := wecom.BuildEnrichedMarkdown(
 		fmt.Sprintf("message-%d", task.MessageID),
 		result.URL,
@@ -223,17 +260,26 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		result.Summary,
 		result.Screenshot,
 	).Content
-	_, err = s.store.EnqueueDelivery(ctx, store.DeliveryTask{
+	if _, err := s.store.EnqueueDelivery(ctx, store.DeliveryTask{
 		MessageID:   task.MessageID,
 		Kind:        store.DeliveryEnriched,
 		Payload:     payload,
 		NextAttempt: time.Now().UTC(),
-	})
-	return err
+	}); err != nil {
+		nextAttempts := task.Attempts + 1
+		if s.cfg.EnrichmentMaxAttempts > 0 && nextAttempts >= s.cfg.EnrichmentMaxAttempts {
+			return s.store.MarkEnrichmentFailed(ctx, task.ID, err.Error())
+		}
+		return s.store.MarkEnrichmentRetry(ctx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
+	}
+	return s.store.MarkEnrichmentDone(ctx, task.ID)
 }
 
 func (s *Service) nextAttempt(attempts int) time.Time {
 	backoff := s.cfg.InitialBackoff
+	if backoff > s.cfg.MaxBackoff {
+		backoff = s.cfg.MaxBackoff
+	}
 	for i := 1; i < attempts; i++ {
 		backoff *= 2
 		if backoff >= s.cfg.MaxBackoff {
