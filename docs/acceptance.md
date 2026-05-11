@@ -22,3 +22,11 @@ sqlite3 /var/lib/wxpusher-bridge/bridge.db 'select id,kind,status,attempts,last_
 sqlite3 /var/lib/wxpusher-bridge/bridge.db 'select id,url,status,attempts,last_error from enrichment_tasks order by id desc limit 5;'
 sqlite3 /var/lib/wxpusher-bridge/bridge.db 'select kind,message,created_at from app_events order by id desc limit 10;'
 ```
+
+## Local Verification Log
+
+- `go test ./...`: PASS
+- `go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge`: PASS
+- Manual WxPusher message test: not run in this environment
+- Manual WeCom delivery test: not run in this environment
+- Manual Headless Chrome screenshot test: not run in this environment
