@@ -1,0 +1,24 @@
+[wxpusher]
+host = "wxpusher.zjiecode.com"
+version = "1.1.0"
+platform = "Chrome-Linux"
+
+[storage]
+sqlite_path = "/var/lib/wxpusher-bridge/bridge.db"
+
+[wecom]
+webhook_url = ""
+webhook_env = "WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL"
+
+[browser]
+enabled = true
+chrome_path = "/usr/bin/chromium"
+screenshot_dir = "/var/lib/wxpusher-bridge/screenshots"
+timeout_seconds = 20
+summary_max_chars = 1000
+
+[retry]
+wecom_max_attempts = 5
+enrichment_max_attempts = 3
+initial_backoff_seconds = 2
+max_backoff_seconds = 60
