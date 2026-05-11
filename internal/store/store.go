@@ -32,10 +32,10 @@ const (
 type TaskStatus string
 
 const (
-	TaskStatusPending TaskStatus = "pending"
-	TaskStatusRunning TaskStatus = "running"
-	TaskStatusDone    TaskStatus = "done"
-	TaskStatusFailed  TaskStatus = "failed"
+	TaskPending TaskStatus = "pending"
+	TaskRunning TaskStatus = "running"
+	TaskDone    TaskStatus = "done"
+	TaskFailed  TaskStatus = "failed"
 )
 
 type DeliveryTask struct {
@@ -79,7 +79,7 @@ type AppEvent struct {
 type Store interface {
 	Close() error
 	SaveIdentity(context.Context, identity.Identity) error
-	LoadIdentity(context.Context) (identity.Identity, bool, error)
+	LoadIdentity(context.Context) (identity.Identity, error)
 	SaveMessage(context.Context, Message) (SaveMessageResult, error)
 	EnqueueDelivery(context.Context, DeliveryTask) (int64, error)
 	ClaimDeliveryTasks(context.Context, int, time.Time) ([]DeliveryTask, error)

@@ -39,12 +39,9 @@ func TestSQLiteIdentityRoundTrip(t *testing.T) {
 	if err := st.SaveIdentity(ctx, want); err != nil {
 		t.Fatalf("SaveIdentity() error = %v", err)
 	}
-	got, ok, err := st.LoadIdentity(ctx)
+	got, err := st.LoadIdentity(ctx)
 	if err != nil {
 		t.Fatalf("LoadIdentity() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("LoadIdentity() ok = false")
 	}
 	if got != want {
 		t.Fatalf("LoadIdentity() = %+v, want %+v", got, want)
@@ -152,7 +149,7 @@ func TestSQLiteTaskLifecycle(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed %d tasks, want 1", len(claimed))
 	}
-	if claimed[0].ID != taskID || claimed[0].Status != TaskStatusRunning || claimed[0].Kind != DeliveryOriginal {
+	if claimed[0].ID != taskID || claimed[0].Status != TaskRunning || claimed[0].Kind != DeliveryOriginal {
 		t.Fatalf("claimed task = %+v, want id %d running original", claimed[0], taskID)
 	}
 	if err := st.MarkDeliveryDone(ctx, taskID, "ok"); err != nil {
@@ -176,7 +173,7 @@ func TestSQLiteEnqueueDeliveryForcesPendingStatus(t *testing.T) {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
 
-	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", Status: TaskStatusFailed})
+	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", Status: TaskFailed})
 	if err != nil {
 		t.Fatalf("EnqueueDelivery() error = %v", err)
 	}
@@ -187,7 +184,7 @@ func TestSQLiteEnqueueDeliveryForcesPendingStatus(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed %d tasks, want 1", len(claimed))
 	}
-	if claimed[0].ID != taskID || claimed[0].Status != TaskStatusRunning {
+	if claimed[0].ID != taskID || claimed[0].Status != TaskRunning {
 		t.Fatalf("claimed task = %+v, want id %d running", claimed[0], taskID)
 	}
 }
@@ -242,7 +239,7 @@ func TestSQLiteEnrichmentLifecycle(t *testing.T) {
 	if len(claimed) != 1 {
 		t.Fatalf("claimed %d tasks, want 1", len(claimed))
 	}
-	if claimed[0].ID != taskID || claimed[0].Status != TaskStatusRunning {
+	if claimed[0].ID != taskID || claimed[0].Status != TaskRunning {
 		t.Fatalf("claimed task = %+v, want id %d running", claimed[0], taskID)
 	}
 	if err := st.SaveEnrichment(ctx, Enrichment{MessageID: msg.ID, URL: "https://example.com", Title: "Title", Summary: "Summary", Screenshot: "/tmp/shot.png"}); err != nil {

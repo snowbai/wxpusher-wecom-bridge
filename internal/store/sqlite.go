@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -167,22 +166,19 @@ func (s *SQLiteStore) SaveIdentity(ctx context.Context, id identity.Identity) er
 	return err
 }
 
-func (s *SQLiteStore) LoadIdentity(ctx context.Context) (identity.Identity, bool, error) {
+func (s *SQLiteStore) LoadIdentity(ctx context.Context) (identity.Identity, error) {
 	var id identity.Identity
 	var updatedAt string
 	err := s.db.QueryRowContext(ctx, `SELECT device_uuid, device_token, push_token, platform, version, source, updated_at FROM identity WHERE id = 1`).
 		Scan(&id.DeviceUUID, &id.DeviceToken, &id.PushToken, &id.Platform, &id.Version, &id.Source, &updatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return identity.Identity{}, false, nil
-	}
 	if err != nil {
-		return identity.Identity{}, false, err
+		return identity.Identity{}, err
 	}
 	id.UpdatedAt, err = decodeTime(updatedAt)
 	if err != nil {
-		return identity.Identity{}, false, err
+		return identity.Identity{}, err
 	}
-	return id, true, nil
+	return id, nil
 }
 
 func (s *SQLiteStore) SaveMessage(ctx context.Context, msg Message) (SaveMessageResult, error) {
@@ -225,7 +221,7 @@ func (s *SQLiteStore) EnqueueDelivery(ctx context.Context, task DeliveryTask) (i
 	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO delivery_attempts
 		(message_id, kind, payload, status, attempts, next_attempt_at, last_error, response_body, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.MessageID, task.Kind, task.Payload, TaskStatusPending, task.Attempts, encodeTime(task.NextAttempt), task.LastError, "", encodeTime(now), encodeTime(now))
+		task.MessageID, task.Kind, task.Payload, TaskPending, task.Attempts, encodeTime(task.NextAttempt), task.LastError, "", encodeTime(now), encodeTime(now))
 	if err != nil {
 		return 0, err
 	}
@@ -251,11 +247,11 @@ func (s *SQLiteStore) ClaimDeliveryTasks(ctx context.Context, limit int, now tim
 		return nil, err
 	}
 	for i := range tasks {
-		if _, err := tx.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, updated_at = ? WHERE id = ?`, TaskStatusRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, updated_at = ? WHERE id = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
-		tasks[i].Status = TaskStatusRunning
+		tasks[i].Status = TaskRunning
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -264,18 +260,18 @@ func (s *SQLiteStore) ClaimDeliveryTasks(ctx context.Context, limit int, now tim
 }
 
 func (s *SQLiteStore) MarkDeliveryDone(ctx context.Context, id int64, responseBody string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, response_body = ?, updated_at = ? WHERE id = ?`, TaskStatusDone, responseBody, encodeTime(time.Now().UTC()), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, response_body = ?, updated_at = ? WHERE id = ?`, TaskDone, responseBody, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
 func (s *SQLiteStore) MarkDeliveryRetry(ctx context.Context, id int64, attempts int, nextAttempt time.Time, lastError string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-		TaskStatusPending, attempts, encodeTime(nextAttempt), lastError, encodeTime(time.Now().UTC()), id)
+		TaskPending, attempts, encodeTime(nextAttempt), lastError, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
 func (s *SQLiteStore) MarkDeliveryFailed(ctx context.Context, id int64, lastError string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`, TaskStatusFailed, lastError, encodeTime(time.Now().UTC()), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`, TaskFailed, lastError, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
@@ -285,7 +281,7 @@ func (s *SQLiteStore) EnqueueEnrichment(ctx context.Context, task EnrichmentTask
 		task.NextAttempt = now
 	}
 	if task.Status == "" {
-		task.Status = TaskStatusPending
+		task.Status = TaskPending
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO enrichment_tasks
 		(message_id, url, status, attempts, next_attempt_at, last_error, created_at, updated_at)
@@ -316,11 +312,11 @@ func (s *SQLiteStore) ClaimEnrichmentTasks(ctx context.Context, limit int, now t
 		return nil, err
 	}
 	for i := range tasks {
-		if _, err := tx.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ?`, TaskStatusRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
-		tasks[i].Status = TaskStatusRunning
+		tasks[i].Status = TaskRunning
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -331,7 +327,7 @@ func (s *SQLiteStore) ClaimEnrichmentTasks(ctx context.Context, limit int, now t
 func (s *SQLiteStore) SaveEnrichment(ctx context.Context, enrichment Enrichment) error {
 	now := time.Now().UTC()
 	if enrichment.Status == "" {
-		enrichment.Status = string(TaskStatusDone)
+		enrichment.Status = string(TaskDone)
 	}
 	if enrichment.CreatedAt.IsZero() {
 		enrichment.CreatedAt = now
@@ -354,18 +350,18 @@ func (s *SQLiteStore) SaveEnrichment(ctx context.Context, enrichment Enrichment)
 }
 
 func (s *SQLiteStore) MarkEnrichmentDone(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ?`, TaskStatusDone, encodeTime(time.Now().UTC()), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ?`, TaskDone, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
 func (s *SQLiteStore) MarkEnrichmentRetry(ctx context.Context, id int64, attempts int, nextAttempt time.Time, lastError string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?, updated_at = ? WHERE id = ?`,
-		TaskStatusPending, attempts, encodeTime(nextAttempt), lastError, encodeTime(time.Now().UTC()), id)
+		TaskPending, attempts, encodeTime(nextAttempt), lastError, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
 func (s *SQLiteStore) MarkEnrichmentFailed(ctx context.Context, id int64, lastError string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`, TaskStatusFailed, lastError, encodeTime(time.Now().UTC()), id)
+	_, err := s.db.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`, TaskFailed, lastError, encodeTime(time.Now().UTC()), id)
 	return err
 }
 
@@ -382,7 +378,7 @@ func selectDeliveryTasks(ctx context.Context, tx *sql.Tx, limit int, now time.Ti
 		FROM delivery_attempts
 		WHERE status = ? AND next_attempt_at <= ?
 		ORDER BY id
-		LIMIT ?`, TaskStatusPending, encodeTime(now), limit)
+		LIMIT ?`, TaskPending, encodeTime(now), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +406,7 @@ func selectEnrichmentTasks(ctx context.Context, tx *sql.Tx, limit int, now time.
 		FROM enrichment_tasks
 		WHERE status = ? AND next_attempt_at <= ?
 		ORDER BY id
-		LIMIT ?`, TaskStatusPending, encodeTime(now), limit)
+		LIMIT ?`, TaskPending, encodeTime(now), limit)
 	if err != nil {
 		return nil, err
 	}
