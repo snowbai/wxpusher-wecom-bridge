@@ -260,7 +260,7 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 			Screenshot: result.Screenshot,
 		})
 	}); err != nil {
-		return err
+		return s.retryOrFailEnrichment(task, err)
 	}
 	payload := wecom.BuildEnrichedMarkdown(
 		fmt.Sprintf("message-%d", task.MessageID),
@@ -278,17 +278,14 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		})
 		return err
 	}); err != nil {
-		nextAttempts := task.Attempts + 1
-		statusCtx, cancel := statusContext()
-		defer cancel()
-		if s.cfg.EnrichmentMaxAttempts > 0 && nextAttempts >= s.cfg.EnrichmentMaxAttempts {
-			return s.store.MarkEnrichmentFailed(statusCtx, task.ID, err.Error())
-		}
-		return s.store.MarkEnrichmentRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
+		return s.retryOrFailEnrichment(task, err)
 	}
-	return withStatusContext(func(statusCtx context.Context) error {
+	if err := withStatusContext(func(statusCtx context.Context) error {
 		return s.store.MarkEnrichmentDone(statusCtx, task.ID)
-	})
+	}); err != nil {
+		return s.retryOrFailEnrichment(task, err)
+	}
+	return nil
 }
 
 func (s *Service) releaseDeliveryTask(_ context.Context, task store.DeliveryTask, cause error) error {
@@ -307,6 +304,16 @@ func (s *Service) releaseEnrichmentTask(_ context.Context, task store.Enrichment
 		return err
 	}
 	return cause
+}
+
+func (s *Service) retryOrFailEnrichment(task store.EnrichmentTask, cause error) error {
+	nextAttempts := task.Attempts + 1
+	statusCtx, cancel := statusContext()
+	defer cancel()
+	if s.cfg.EnrichmentMaxAttempts > 0 && nextAttempts >= s.cfg.EnrichmentMaxAttempts {
+		return s.store.MarkEnrichmentFailed(statusCtx, task.ID, cause.Error())
+	}
+	return s.store.MarkEnrichmentRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), cause.Error())
 }
 
 func withStatusContext(fn func(context.Context) error) error {

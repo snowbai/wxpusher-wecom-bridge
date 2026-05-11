@@ -415,6 +415,46 @@ func TestEnrichmentSuccessUsesFreshContextForMarkDone(t *testing.T) {
 	}
 }
 
+func TestEnrichmentSaveFailureReleasesTaskForRetry(t *testing.T) {
+	ctx := context.Background()
+	st := &enrichmentSaveFailStore{saveErr: errors.New("save failed")}
+	svc := New(st, nil, &fakeFetcher{result: EnrichmentResult{Title: "Example", Summary: "summary"}}, Config{EnrichmentMaxAttempts: 2})
+	task := store.EnrichmentTask{ID: 11, MessageID: 42, URL: "https://example.com"}
+
+	if err := svc.processEnrichmentTask(ctx, task); err != nil {
+		t.Fatalf("processEnrichmentTask() error = %v, want handled retry", err)
+	}
+	if st.retryCalls != 1 {
+		t.Fatalf("MarkEnrichmentRetry calls = %d, want 1", st.retryCalls)
+	}
+	if st.retryAttempts != 1 {
+		t.Fatalf("retry attempts = %d, want 1", st.retryAttempts)
+	}
+	if st.markDoneCalls != 0 {
+		t.Fatalf("MarkEnrichmentDone calls = %d, want 0", st.markDoneCalls)
+	}
+}
+
+func TestEnrichmentMarkDoneFailureReleasesTaskForRetry(t *testing.T) {
+	ctx := context.Background()
+	st := &enrichmentMarkDoneFailStore{markDoneErr: context.DeadlineExceeded}
+	svc := New(st, nil, &fakeFetcher{result: EnrichmentResult{Title: "Example", Summary: "summary"}}, Config{EnrichmentMaxAttempts: 2})
+	task := store.EnrichmentTask{ID: 12, MessageID: 42, URL: "https://example.com"}
+
+	if err := svc.processEnrichmentTask(ctx, task); err != nil {
+		t.Fatalf("processEnrichmentTask() error = %v, want handled retry", err)
+	}
+	if st.markDoneCalls != 1 {
+		t.Fatalf("MarkEnrichmentDone calls = %d, want 1", st.markDoneCalls)
+	}
+	if st.retryCalls != 1 {
+		t.Fatalf("MarkEnrichmentRetry calls = %d, want 1", st.retryCalls)
+	}
+	if st.retryAttempts != 1 {
+		t.Fatalf("retry attempts = %d, want 1", st.retryAttempts)
+	}
+}
+
 func TestEnrichmentWorkerDoesNotMarkDoneWhenEnrichedDeliveryEnqueueFails(t *testing.T) {
 	ctx := context.Background()
 	st := &enrichmentEnqueueFailStore{enqueueErr: errors.New("enqueue failed")}
@@ -547,6 +587,68 @@ func (s *enrichmentContextTrackingStore) MarkEnrichmentDone(ctx context.Context,
 	if ctx == s.saveCtx || ctx == s.enqueueCtx {
 		return errors.New("MarkEnrichmentDone reused prior status context")
 	}
+	return nil
+}
+
+type enrichmentSaveFailStore struct {
+	store.Store
+	saveErr       error
+	markDoneCalls int
+	retryCalls    int
+	retryAttempts int
+}
+
+func (s *enrichmentSaveFailStore) SaveEnrichment(context.Context, store.Enrichment) error {
+	return s.saveErr
+}
+
+func (s *enrichmentSaveFailStore) EnqueueDelivery(context.Context, store.DeliveryTask) (int64, error) {
+	return 1, nil
+}
+
+func (s *enrichmentSaveFailStore) MarkEnrichmentDone(context.Context, int64) error {
+	s.markDoneCalls++
+	return nil
+}
+
+func (s *enrichmentSaveFailStore) MarkEnrichmentRetry(_ context.Context, _ int64, attempts int, _ time.Time, _ string) error {
+	s.retryCalls++
+	s.retryAttempts = attempts
+	return nil
+}
+
+func (s *enrichmentSaveFailStore) MarkEnrichmentFailed(context.Context, int64, string) error {
+	return nil
+}
+
+type enrichmentMarkDoneFailStore struct {
+	store.Store
+	markDoneErr   error
+	markDoneCalls int
+	retryCalls    int
+	retryAttempts int
+}
+
+func (s *enrichmentMarkDoneFailStore) SaveEnrichment(context.Context, store.Enrichment) error {
+	return nil
+}
+
+func (s *enrichmentMarkDoneFailStore) EnqueueDelivery(context.Context, store.DeliveryTask) (int64, error) {
+	return 1, nil
+}
+
+func (s *enrichmentMarkDoneFailStore) MarkEnrichmentDone(context.Context, int64) error {
+	s.markDoneCalls++
+	return s.markDoneErr
+}
+
+func (s *enrichmentMarkDoneFailStore) MarkEnrichmentRetry(_ context.Context, _ int64, attempts int, _ time.Time, _ string) error {
+	s.retryCalls++
+	s.retryAttempts = attempts
+	return nil
+}
+
+func (s *enrichmentMarkDoneFailStore) MarkEnrichmentFailed(context.Context, int64, string) error {
 	return nil
 }
 
