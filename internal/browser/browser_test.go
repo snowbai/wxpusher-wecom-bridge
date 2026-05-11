@@ -108,6 +108,9 @@ func TestValidateFetchURLWithResolverRejectsUnsafeIPv6Hostnames(t *testing.T) {
 		"::1",
 		"fe80::1",
 		"fd00::1",
+		"2001:2::1",
+		"2001:20::1",
+		"64:ff9b:1::1",
 	}
 
 	for _, resolved := range tests {

@@ -64,6 +64,9 @@ var specialUseAddrPrefixes = []netip.Prefix{
 	mustAddrPrefix("240.0.0.0/4"),
 	mustAddrPrefix("2001:db8::/32"),
 	mustAddrPrefix("100::/64"),
+	mustAddrPrefix("2001:2::/48"),
+	mustAddrPrefix("2001:20::/28"),
+	mustAddrPrefix("64:ff9b:1::/48"),
 }
 
 func mustAddrPrefix(prefix string) netip.Prefix {
