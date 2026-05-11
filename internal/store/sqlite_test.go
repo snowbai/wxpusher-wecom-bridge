@@ -296,6 +296,31 @@ func TestSQLiteEnrichmentLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteEnqueueEnrichmentForcesPendingStatus(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	now := time.Date(2026, 5, 11, 12, 15, 0, 0, time.UTC)
+	msg, err := st.SaveMessage(ctx, Message{QID: "forced-enrichment-pending-qid", MsgType: 1, Content: "https://example.com"})
+	if err != nil {
+		t.Fatalf("SaveMessage() error = %v", err)
+	}
+
+	taskID, err := st.EnqueueEnrichment(ctx, EnrichmentTask{MessageID: msg.ID, URL: "https://example.com", Status: TaskFailed})
+	if err != nil {
+		t.Fatalf("EnqueueEnrichment() error = %v", err)
+	}
+	claimed, err := st.ClaimEnrichmentTasks(ctx, 10, now)
+	if err != nil {
+		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed %d tasks, want 1", len(claimed))
+	}
+	if claimed[0].ID != taskID || claimed[0].Status != TaskRunning {
+		t.Fatalf("claimed task = %+v, want id %d running", claimed[0], taskID)
+	}
+}
+
 func TestSQLiteEnqueueEnrichmentRejectsMissingMessage(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)

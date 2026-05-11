@@ -295,13 +295,10 @@ func (s *SQLiteStore) EnqueueEnrichment(ctx context.Context, task EnrichmentTask
 	if task.NextAttempt.IsZero() {
 		task.NextAttempt = now
 	}
-	if task.Status == "" {
-		task.Status = TaskPending
-	}
 	res, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO enrichment_tasks
 		(message_id, url, status, attempts, next_attempt_at, last_error, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		task.MessageID, task.URL, task.Status, task.Attempts, encodeTime(task.NextAttempt), task.LastError, encodeTime(now), encodeTime(now))
+		task.MessageID, task.URL, TaskPending, task.Attempts, encodeTime(task.NextAttempt), task.LastError, encodeTime(now), encodeTime(now))
 	if err != nil {
 		return 0, err
 	}
