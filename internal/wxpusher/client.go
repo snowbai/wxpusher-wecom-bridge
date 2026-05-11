@@ -15,6 +15,11 @@ import (
 	"github.com/hhh/wxpusher-wecom-bridge/internal/identity"
 )
 
+const (
+	responseBodyLimit      = 1 << 20
+	errorResponseBodyLimit = 1024
+)
+
 type HTTPClient struct {
 	baseURL string
 	client  *http.Client
@@ -42,13 +47,23 @@ func (c *HTTPClient) UpdatePushToken(ctx context.Context, id identity.Identity, 
 	}
 	req.Header = BuildHTTPHeaders(id)
 
-	resp, err := c.client.Do(req)
+	client := *c.client
+	client.Jar = nil
+	resp, err := client.Do(req)
 	if err != nil {
 		return identity.Identity{}, err
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, errorResponseBodyLimit))
+		if readErr != nil {
+			return identity.Identity{}, readErr
+		}
+		return identity.Identity{}, fmt.Errorf("wxpusher register device failed: status=%s body=%q", resp.Status, string(data))
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit))
 	if err != nil {
 		return identity.Identity{}, err
 	}
@@ -97,21 +112,19 @@ func (c *WSClient) Run(ctx context.Context) error {
 	if c.Host == "" {
 		return errors.New("wxpusher host is required")
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, BuildWebSocketURL(c.Host, c.Identity), nil)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	conn, _, err := websocket.DefaultDialer.DialContext(runCtx, BuildWebSocketURL(c.Host, c.Identity), nil)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 
-	done := make(chan struct{})
 	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-done:
-		}
+		<-runCtx.Done()
+		_ = conn.Close()
 	}()
-	defer close(done)
 
 	ticker := time.NewTicker(26 * time.Second)
 	defer ticker.Stop()
@@ -120,7 +133,7 @@ func (c *WSClient) Run(ctx context.Context) error {
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				return
 			case <-ticker.C:
 				if err := conn.WriteMessage(websocket.TextMessage, HeartbeatPayload()); err != nil {
@@ -133,8 +146,8 @@ func (c *WSClient) Run(ctx context.Context) error {
 
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-runCtx.Done():
+			return runCtx.Err()
 		case err := <-writeErr:
 			return err
 		default:
@@ -142,8 +155,8 @@ func (c *WSClient) Run(ctx context.Context) error {
 
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
+			if runCtx.Err() != nil {
+				return runCtx.Err()
 			}
 			return err
 		}
