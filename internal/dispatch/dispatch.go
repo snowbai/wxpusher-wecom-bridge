@@ -15,6 +15,7 @@ const (
 	defaultInitialBackoff = 2 * time.Second
 	defaultMaxBackoff     = 60 * time.Second
 	defaultClaimLimit     = 1
+	statusUpdateTimeout   = 5 * time.Second
 )
 
 type Sender interface {
@@ -172,7 +173,7 @@ func (s *Service) processDeliveryOnce(ctx context.Context) error {
 	}
 	for _, task := range tasks {
 		if err := ctx.Err(); err != nil {
-			return err
+			return s.releaseDeliveryTask(ctx, task, err)
 		}
 		if err := s.processDeliveryTask(ctx, task); err != nil {
 			return err
@@ -183,7 +184,7 @@ func (s *Service) processDeliveryOnce(ctx context.Context) error {
 
 func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTask) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return s.releaseDeliveryTask(ctx, task, err)
 	}
 	if s.sender == nil {
 		return errors.New("dispatch delivery worker requires sender")
@@ -193,12 +194,16 @@ func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTa
 	}
 	if err := s.sender.SendMarkdown(ctx, task.Payload); err != nil {
 		nextAttempts := task.Attempts + 1
+		statusCtx, cancel := statusContext()
+		defer cancel()
 		if s.cfg.WeComMaxAttempts > 0 && nextAttempts >= s.cfg.WeComMaxAttempts {
-			return s.store.MarkDeliveryFailed(ctx, task.ID, err.Error())
+			return s.store.MarkDeliveryFailed(statusCtx, task.ID, err.Error())
 		}
-		return s.store.MarkDeliveryRetry(ctx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
+		return s.store.MarkDeliveryRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
 	}
-	return s.store.MarkDeliveryDone(ctx, task.ID, "ok")
+	statusCtx, cancel := statusContext()
+	defer cancel()
+	return s.store.MarkDeliveryDone(statusCtx, task.ID, "ok")
 }
 
 func (s *Service) processEnrichmentOnce(ctx context.Context) error {
@@ -214,7 +219,7 @@ func (s *Service) processEnrichmentOnce(ctx context.Context) error {
 	}
 	for _, task := range tasks {
 		if err := ctx.Err(); err != nil {
-			return err
+			return s.releaseEnrichmentTask(ctx, task, err)
 		}
 		if err := s.processEnrichmentTask(ctx, task); err != nil {
 			return err
@@ -225,7 +230,7 @@ func (s *Service) processEnrichmentOnce(ctx context.Context) error {
 
 func (s *Service) processEnrichmentTask(ctx context.Context, task store.EnrichmentTask) error {
 	if err := ctx.Err(); err != nil {
-		return err
+		return s.releaseEnrichmentTask(ctx, task, err)
 	}
 	if s.fetcher == nil {
 		return errors.New("dispatch enrichment worker requires fetcher")
@@ -236,15 +241,19 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 	result, err := s.fetcher.Fetch(ctx, task.URL)
 	if err != nil {
 		nextAttempts := task.Attempts + 1
+		statusCtx, cancel := statusContext()
+		defer cancel()
 		if s.cfg.EnrichmentMaxAttempts > 0 && nextAttempts >= s.cfg.EnrichmentMaxAttempts {
-			return s.store.MarkEnrichmentFailed(ctx, task.ID, err.Error())
+			return s.store.MarkEnrichmentFailed(statusCtx, task.ID, err.Error())
 		}
-		return s.store.MarkEnrichmentRetry(ctx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
+		return s.store.MarkEnrichmentRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
 	}
 	if result.URL == "" {
 		result.URL = task.URL
 	}
-	if err := s.store.SaveEnrichment(ctx, store.Enrichment{
+	statusCtx, cancel := statusContext()
+	defer cancel()
+	if err := s.store.SaveEnrichment(statusCtx, store.Enrichment{
 		MessageID:  task.MessageID,
 		URL:        result.URL,
 		Title:      result.Title,
@@ -260,19 +269,43 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		result.Summary,
 		result.Screenshot,
 	).Content
-	if _, err := s.store.EnqueueDelivery(ctx, store.DeliveryTask{
+	if _, err := s.store.EnqueueDelivery(statusCtx, store.DeliveryTask{
 		MessageID:   task.MessageID,
 		Kind:        store.DeliveryEnriched,
 		Payload:     payload,
 		NextAttempt: time.Now().UTC(),
 	}); err != nil {
 		nextAttempts := task.Attempts + 1
+		statusCtx, cancel := statusContext()
+		defer cancel()
 		if s.cfg.EnrichmentMaxAttempts > 0 && nextAttempts >= s.cfg.EnrichmentMaxAttempts {
-			return s.store.MarkEnrichmentFailed(ctx, task.ID, err.Error())
+			return s.store.MarkEnrichmentFailed(statusCtx, task.ID, err.Error())
 		}
-		return s.store.MarkEnrichmentRetry(ctx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
+		return s.store.MarkEnrichmentRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
 	}
-	return s.store.MarkEnrichmentDone(ctx, task.ID)
+	return s.store.MarkEnrichmentDone(statusCtx, task.ID)
+}
+
+func (s *Service) releaseDeliveryTask(_ context.Context, task store.DeliveryTask, cause error) error {
+	statusCtx, cancel := statusContext()
+	defer cancel()
+	if err := s.store.MarkDeliveryRetry(statusCtx, task.ID, task.Attempts, time.Now().UTC(), cause.Error()); err != nil {
+		return err
+	}
+	return cause
+}
+
+func (s *Service) releaseEnrichmentTask(_ context.Context, task store.EnrichmentTask, cause error) error {
+	statusCtx, cancel := statusContext()
+	defer cancel()
+	if err := s.store.MarkEnrichmentRetry(statusCtx, task.ID, task.Attempts, time.Now().UTC(), cause.Error()); err != nil {
+		return err
+	}
+	return cause
+}
+
+func statusContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), statusUpdateTimeout)
 }
 
 func (s *Service) nextAttempt(attempts int) time.Time {

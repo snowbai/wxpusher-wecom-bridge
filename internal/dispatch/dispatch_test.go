@@ -23,6 +23,19 @@ func (s *fakeSender) SendMarkdown(_ context.Context, content string) error {
 	return s.err
 }
 
+type contextCanceledSender struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (s *contextCanceledSender) SendMarkdown(context.Context, string) error {
+	s.calls++
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return context.Canceled
+}
+
 type cancelingSender struct {
 	cancel context.CancelFunc
 	calls  int
@@ -34,6 +47,19 @@ func (s *cancelingSender) SendMarkdown(_ context.Context, _ string) error {
 		s.cancel()
 	}
 	return nil
+}
+
+type contextCanceledFetcher struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (f *contextCanceledFetcher) Fetch(context.Context, string) (EnrichmentResult, error) {
+	f.calls++
+	if f.cancel != nil {
+		f.cancel()
+	}
+	return EnrichmentResult{}, context.Canceled
 }
 
 type cancelingFetcher struct {
@@ -163,12 +189,41 @@ func TestDeliveryWorkerSendsAndMarksDone(t *testing.T) {
 	if len(sender.sent) != 1 || !strings.Contains(sender.sent[0], "q-deliver") {
 		t.Fatalf("sent payloads = %#v, want one payload containing q-deliver", sender.sent)
 	}
-	claimed, err := st.ClaimDeliveryTasks(ctx, 10, now.Add(time.Hour))
+	claimed, err := st.ClaimDeliveryTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
 	if len(claimed) != 0 {
 		t.Fatalf("claimed %d tasks after success, want 0", len(claimed))
+	}
+}
+
+func TestDeliveryTaskReturningContextCanceledIsReleased(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st := openTestStore(t)
+	sender := &contextCanceledSender{cancel: cancel}
+	svc := New(st, sender, nil, Config{WeComMaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
+	now := time.Now().UTC()
+
+	if err := svc.HandleMessage(ctx, IncomingMessage{QID: "q-current-cancel-delivery", MsgType: 20001, Content: "current", ReceivedAt: now}); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if err := svc.processDeliveryOnce(ctx); err != nil {
+		t.Fatalf("processDeliveryOnce() error = %v", err)
+	}
+	if sender.calls != 1 {
+		t.Fatalf("sender calls = %d, want 1", sender.calls)
+	}
+
+	claimed, err := st.ClaimDeliveryTasks(context.Background(), 10, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimable delivery tasks = %d, want 1", len(claimed))
+	}
+	if !strings.Contains(claimed[0].Payload, "q-current-cancel-delivery") {
+		t.Fatalf("claimable delivery payload = %q, want current canceled message", claimed[0].Payload)
 	}
 }
 
@@ -219,7 +274,7 @@ func TestDeliveryWorkerRetriesThenFails(t *testing.T) {
 	if err := svc.processDeliveryOnce(ctx); err != nil {
 		t.Fatalf("first processDeliveryOnce() error = %v", err)
 	}
-	retry, err := st.ClaimDeliveryTasks(ctx, 10, now.Add(time.Hour))
+	retry, err := st.ClaimDeliveryTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
@@ -267,7 +322,7 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 		t.Fatalf("processEnrichmentTask() error = %v", err)
 	}
 
-	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, now.Add(time.Hour))
+	deliveries, err := st.ClaimDeliveryTasks(ctx, 10, time.Now().UTC().Add(time.Second))
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
@@ -280,6 +335,35 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	wantPayload := wecom.BuildEnrichedMarkdown("message-1", "https://example.com", "Example", "summary", "/tmp/example.png").Content
 	if deliveries[1].Payload != wantPayload {
 		t.Fatalf("enriched payload = %q, want %q", deliveries[1].Payload, wantPayload)
+	}
+}
+
+func TestEnrichmentTaskReturningContextCanceledIsReleased(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st := openTestStore(t)
+	fetcher := &contextCanceledFetcher{cancel: cancel}
+	svc := New(st, nil, fetcher, Config{EnrichmentMaxAttempts: 3, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
+	now := time.Now().UTC()
+
+	if err := svc.HandleMessage(ctx, IncomingMessage{QID: "q-current-cancel-enrich", MsgType: 20001, Content: "current https://current.example", ReceivedAt: now}); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if err := svc.processEnrichmentOnce(ctx); err != nil {
+		t.Fatalf("processEnrichmentOnce() error = %v", err)
+	}
+	if fetcher.calls != 1 {
+		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
+	}
+
+	claimed, err := st.ClaimEnrichmentTasks(context.Background(), 10, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimable enrichment tasks = %d, want 1", len(claimed))
+	}
+	if claimed[0].URL != "https://current.example" {
+		t.Fatalf("claimable enrichment URL = %q, want https://current.example", claimed[0].URL)
 	}
 }
 
