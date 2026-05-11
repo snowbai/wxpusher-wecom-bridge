@@ -2,6 +2,7 @@ package wecom
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -47,8 +48,35 @@ func TestBuildEnrichedMarkdown(t *testing.T) {
 	}
 }
 
+func TestMarkdownPayloadJSONUsesContentKey(t *testing.T) {
+	body, err := json.Marshal(struct {
+		MsgType  string          `json:"msgtype"`
+		Markdown MarkdownPayload `json:"markdown"`
+	}{
+		MsgType:  "markdown",
+		Markdown: MarkdownPayload{Content: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("marshal request body: %v", err)
+	}
+
+	var request struct {
+		Markdown map[string]string `json:"markdown"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if request.Markdown["content"] != "hello" {
+		t.Fatalf("markdown.content = %q, want hello; body=%s", request.Markdown["content"], body)
+	}
+	if _, ok := request.Markdown["Content"]; ok {
+		t.Fatalf("body used Content key, want content key: %s", body)
+	}
+}
+
 func TestSendPostsMarkdownPayload(t *testing.T) {
 	var body string
+	payload := BuildOriginalMarkdown("q1", "hello")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
@@ -66,12 +94,25 @@ func TestSendPostsMarkdownPayload(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := New(server.URL, http.DefaultClient).Send(context.Background(), BuildOriginalMarkdown("q1", "hello"))
+	err := New(server.URL, http.DefaultClient).Send(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("Send returned error: %v", err)
 	}
-	if !strings.Contains(body, `"msgtype":"markdown"`) {
-		t.Fatalf("body = %q, want markdown msgtype", body)
+
+	var request struct {
+		MsgType  string `json:"msgtype"`
+		Markdown struct {
+			Content string `json:"content"`
+		} `json:"markdown"`
+	}
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if request.MsgType != "markdown" {
+		t.Fatalf("msgtype = %q, want markdown", request.MsgType)
+	}
+	if request.Markdown.Content != payload.Content {
+		t.Fatalf("markdown.content = %q, want %q", request.Markdown.Content, payload.Content)
 	}
 }
 

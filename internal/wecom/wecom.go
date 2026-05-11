@@ -18,7 +18,7 @@ const (
 )
 
 type MarkdownPayload struct {
-	Content string
+	Content string `json:"content"`
 }
 
 type Client struct {
