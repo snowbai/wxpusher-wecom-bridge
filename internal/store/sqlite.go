@@ -23,6 +23,10 @@ func OpenSQLite(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	st := &SQLiteStore{db: db}
 	if err := st.migrate(context.Background()); err != nil {
@@ -60,7 +64,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS delivery_attempts (
 			id INTEGER PRIMARY KEY,
-			message_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL REFERENCES messages(id),
 			kind TEXT NOT NULL,
 			payload TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -74,7 +78,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS enrichment_tasks (
 			id INTEGER PRIMARY KEY,
-			message_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL REFERENCES messages(id),
 			url TEXT NOT NULL,
 			status TEXT NOT NULL,
 			attempts INTEGER NOT NULL,
@@ -86,14 +90,14 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS enrichments (
 			id INTEGER PRIMARY KEY,
-			message_id INTEGER NOT NULL,
+			message_id INTEGER NOT NULL REFERENCES messages(id),
 			url TEXT NOT NULL,
 			title TEXT NOT NULL,
 			summary TEXT NOT NULL,
 			screenshot_path TEXT NOT NULL,
 			content_status TEXT NOT NULL,
 			created_at TEXT NOT NULL,
-			completed_at TEXT NOT NULL,
+			completed_at TEXT,
 			UNIQUE(message_id, url)
 		)`,
 		`CREATE TABLE IF NOT EXISTS app_events (
@@ -111,10 +115,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	if err := s.ensureColumn(ctx, "enrichments", "content_status", `ALTER TABLE enrichments ADD COLUMN content_status TEXT NOT NULL DEFAULT 'done'`); err != nil {
 		return err
 	}
-	if err := s.ensureColumn(ctx, "enrichments", "completed_at", `ALTER TABLE enrichments ADD COLUMN completed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+	if err := s.ensureColumn(ctx, "enrichments", "completed_at", `ALTER TABLE enrichments ADD COLUMN completed_at TEXT`); err != nil {
 		return err
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS delivery_attempts_unique_task ON delivery_attempts(message_id, kind, payload)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DROP INDEX IF EXISTS delivery_attempts_unique_task`); err != nil {
 		return err
 	}
 	return nil
@@ -246,17 +250,28 @@ func (s *SQLiteStore) ClaimDeliveryTasks(ctx context.Context, limit int, now tim
 		_ = tx.Rollback()
 		return nil, err
 	}
+	claimed := make([]DeliveryTask, 0, len(tasks))
 	for i := range tasks {
-		if _, err := tx.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, updated_at = ? WHERE id = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE delivery_attempts SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID, TaskPending)
+		if err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if rows == 0 {
+			continue
+		}
 		tasks[i].Status = TaskRunning
+		claimed = append(claimed, tasks[i])
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return tasks, nil
+	return claimed, nil
 }
 
 func (s *SQLiteStore) MarkDeliveryDone(ctx context.Context, id int64, responseBody string) error {
@@ -311,17 +326,28 @@ func (s *SQLiteStore) ClaimEnrichmentTasks(ctx context.Context, limit int, now t
 		_ = tx.Rollback()
 		return nil, err
 	}
+	claimed := make([]EnrichmentTask, 0, len(tasks))
 	for i := range tasks {
-		if _, err := tx.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE enrichment_tasks SET status = ?, updated_at = ? WHERE id = ? AND status = ?`, TaskRunning, encodeTime(time.Now().UTC()), tasks[i].ID, TaskPending)
+		if err != nil {
 			_ = tx.Rollback()
 			return nil, err
 		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			_ = tx.Rollback()
+			return nil, err
+		}
+		if rows == 0 {
+			continue
+		}
 		tasks[i].Status = TaskRunning
+		claimed = append(claimed, tasks[i])
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return tasks, nil
+	return claimed, nil
 }
 
 func (s *SQLiteStore) SaveEnrichment(ctx context.Context, enrichment Enrichment) error {
