@@ -1,0 +1,21 @@
+[Unit]
+Description=WxPusher to WeCom bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wxpusher-bridge
+Group=wxpusher-bridge
+EnvironmentFile=-/etc/wxpusher-bridge/env
+ExecStart=/usr/local/bin/wxpusher-bridge run -config /etc/wxpusher-bridge/config.toml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/wxpusher-bridge
+
+[Install]
+WantedBy=multi-user.target
