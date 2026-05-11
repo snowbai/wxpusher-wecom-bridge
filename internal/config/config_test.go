@@ -15,6 +15,9 @@ sqlite_path = "`+filepath.Join(dir, "bridge.db")+`"
 
 [wecom]
 webhook_env = "TEST_WECOM_WEBHOOK"
+
+[receiver]
+extension_id = "abcdefghijklmnopabcdefghijklmnop"
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +35,29 @@ webhook_env = "TEST_WECOM_WEBHOOK"
 	}
 	if cfg.WeCom.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc" {
 		t.Fatalf("webhook url not resolved from env")
+	}
+	if cfg.Receiver.Mode != "chrome-cdp" {
+		t.Fatalf("receiver mode = %q, want chrome-cdp", cfg.Receiver.Mode)
+	}
+	if cfg.Receiver.CDPURL != "http://127.0.0.1:9222" {
+		t.Fatalf("receiver cdp url = %q", cfg.Receiver.CDPURL)
+	}
+}
+
+func TestPlatformForGOOSMatchesExtension(t *testing.T) {
+	tests := map[string]string{
+		"windows": "Chrome-Windows",
+		"darwin":  "Chrome-Mac",
+		"linux":   "Chrome-Other",
+		"freebsd": "Chrome-Other",
+	}
+
+	for goos, want := range tests {
+		t.Run(goos, func(t *testing.T) {
+			if got := platformForGOOS(goos); got != want {
+				t.Fatalf("platformForGOOS(%q) = %q, want %q", goos, got, want)
+			}
+		})
 	}
 }
 
@@ -125,6 +151,55 @@ func TestValidateRejectsInvalidRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidReceiverConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*Config)
+	}{
+		{
+			name: "unknown receiver mode",
+			edit: func(cfg *Config) {
+				cfg.Receiver.Mode = "direct-go"
+			},
+		},
+		{
+			name: "chrome cdp without url",
+			edit: func(cfg *Config) {
+				cfg.Receiver.CDPURL = " "
+			},
+		},
+		{
+			name: "chrome cdp without extension id",
+			edit: func(cfg *Config) {
+				cfg.Receiver.ExtensionID = ""
+			},
+		},
+		{
+			name: "chrome cdp invalid extension id",
+			edit: func(cfg *Config) {
+				cfg.Receiver.ExtensionID = "not-an-extension-id"
+			},
+		},
+		{
+			name: "chrome cdp timeout less than one",
+			edit: func(cfg *Config) {
+				cfg.Receiver.ReadyTimeoutSeconds = 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.edit(&cfg)
+
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
 func TestValidateRejectsInvalidEnabledBrowserConfig(t *testing.T) {
 	tests := []struct {
 		name string
@@ -171,5 +246,6 @@ func TestValidateRejectsInvalidEnabledBrowserConfig(t *testing.T) {
 func validConfig() Config {
 	cfg := Default()
 	cfg.WeCom.WebhookURL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc"
+	cfg.Receiver.ExtensionID = "abcdefghijklmnopabcdefghijklmnop"
 	return cfg
 }

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wxpusher.bridge</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/wxpusher-bridge</string>
+    <string>run</string>
+    <string>-config</string>
+    <string>/usr/local/etc/wxpusher-bridge/config.toml</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL</key>
+    <string>https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=replace-me</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/wxpusher-bridge.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/wxpusher-bridge.err.log</string>
+</dict>
+</plist>

@@ -1,62 +1,85 @@
 # WxPusher WeCom Bridge
 
-Go service that receives WxPusher messages using the same protocol shape as the Chrome extension, persists messages locally, forwards originals to a WeCom robot, and enriches linked messages with Headless Chrome text extraction and screenshots.
+Go sidecar for an existing WxPusher Chrome extension. The extension keeps the original WxPusher network connection, while this bridge listens to Chrome DevTools Protocol WebSocket events, persists messages locally, forwards originals to a WeCom robot, and enriches linked messages with page text and screenshots.
 
-## Safety Notes
+## Why Chrome CDP
 
-- The bridge does not read or send Chrome cookies.
-- The bridge only imports explicit identity fields from a specified Chrome profile or JSON file.
-- The WxPusher protocol implementation keeps the extension's headers and WebSocket parameters: `platform`, `version`, `deviceToken`, and optional `pushToken`.
-- Logs and import output redact `deviceToken` and `pushToken`.
+The bridge does not recreate WxPusher HTTP or WebSocket requests. Chrome and the installed extension still own:
 
-## Quick Start
+- WebSocket handshake headers
+- `User-Agent`
+- `Accept-Language`
+- cookies and credential policy
+- `Origin: chrome-extension://...`
+- TLS and browser network fingerprint
+
+The Go process only observes frames through CDP and handles storage, WeCom delivery, and enrichment.
+
+## Mac Quick Start
+
+1. Quit Chrome completely.
+
+2. Start the same Chrome profile with local CDP enabled:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --profile-directory=Default
+```
+
+3. Confirm CDP is reachable:
+
+```bash
+curl -sS http://127.0.0.1:9222/json/version
+```
+
+4. Get the WxPusher extension ID from `chrome://extensions`, then update `config.local.toml`:
 
 ```bash
 go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge
 cp configs/config.example.toml config.local.toml
+```
+
+Set:
+
+```toml
+[receiver]
+mode = "chrome-cdp"
+cdp_url = "http://127.0.0.1:9222"
+extension_id = "<your installed WxPusher extension id>"
+```
+
+For a local Mac run, keep storage under a writable local directory:
+
+```toml
+[storage]
+sqlite_path = "./wxpusher-bridge-data/bridge.db"
+
+[browser]
+screenshot_dir = "./wxpusher-bridge-data/screenshots"
+```
+
+5. Set the WeCom webhook and run:
+
+```bash
 export WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL='https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'
-bin/wxpusher-bridge import-json -config config.local.toml -file identity.local.json
 bin/wxpusher-bridge run -config config.local.toml
 ```
 
-To import from the installed Chrome extension instead of JSON:
+The bridge is ready only after it attaches to the extension service worker and observes the WxPusher WebSocket.
 
-```bash
-bin/wxpusher-bridge import-chrome -config config.local.toml -profile "/path/to/Profile" -extension-id "<id>"
-```
+## LaunchAgent
 
-## Server Deployment
+The included examples under `docs/launchd/` are user-level LaunchAgents:
 
-1. Build or copy the binary to `/usr/local/bin/wxpusher-bridge`.
-2. Create a service user and data directory:
+- `com.wxpusher.chrome-debug.plist`: starts Chrome with CDP on `127.0.0.1:9222`.
+- `com.wxpusher.bridge.plist`: starts the Go bridge.
 
-```bash
-sudo useradd --system --home /var/lib/wxpusher-bridge --shell /usr/sbin/nologin wxpusher-bridge
-sudo mkdir -p /etc/wxpusher-bridge /var/lib/wxpusher-bridge/screenshots
-sudo chown -R wxpusher-bridge:wxpusher-bridge /var/lib/wxpusher-bridge
-```
+Install them under `~/Library/LaunchAgents` after adjusting paths and webhook values.
 
-3. Copy `configs/config.example.toml` to `/etc/wxpusher-bridge/config.toml` and adjust paths, Chrome binary, and retry settings.
-4. Store the WeCom webhook outside the TOML file:
+## Fallback Mode
 
-```bash
-sudo install -m 0600 /dev/null /etc/wxpusher-bridge/env
-echo 'WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...' | sudo tee /etc/wxpusher-bridge/env
-```
-
-5. Import the identity before starting the service:
-
-```bash
-sudo -u wxpusher-bridge /usr/local/bin/wxpusher-bridge import-json -config /etc/wxpusher-bridge/config.toml -file /path/to/identity.local.json
-```
-
-6. Install and start the unit:
-
-```bash
-sudo cp docs/systemd/wxpusher-bridge.service /etc/systemd/system/wxpusher-bridge.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now wxpusher-bridge
-sudo journalctl -u wxpusher-bridge -f
-```
+`receiver.mode = "go-fallback"` keeps the earlier pure-Go WxPusher client available for debugging. It is not the default and does not satisfy the goal of matching the Chrome extension's network behavior.
 
 See `docs/acceptance.md` for manual verification.

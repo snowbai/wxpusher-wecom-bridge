@@ -1,10 +1,16 @@
 [wxpusher]
 host = "wxpusher.zjiecode.com"
 version = "1.1.0"
-platform = "Chrome-Linux"
+platform = "Chrome-Mac"
+
+[receiver]
+mode = "chrome-cdp"
+cdp_url = "http://127.0.0.1:9222"
+extension_id = "abcdefghijklmnopabcdefghijklmnop"
+ready_timeout_seconds = 60
 
 [storage]
-sqlite_path = "/var/lib/wxpusher-bridge/bridge.db"
+sqlite_path = "./wxpusher-bridge-data/bridge.db"
 
 [wecom]
 webhook_url = ""
@@ -13,7 +19,7 @@ webhook_env = "WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL"
 [browser]
 enabled = true
 chrome_path = "/usr/bin/chromium"
-screenshot_dir = "/var/lib/wxpusher-bridge/screenshots"
+screenshot_dir = "./wxpusher-bridge-data/screenshots"
 timeout_seconds = 20
 summary_max_chars = 1000
 

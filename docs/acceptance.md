@@ -1,18 +1,22 @@
 # Acceptance Checklist
 
 1. Build the binary with `go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge`.
-2. Create a local config from `configs/config.example.toml`.
-3. Set `WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL` in the shell or systemd env file.
-4. Import identity with `bin/wxpusher-bridge import-json -config config.local.toml -file identity.local.json` or `bin/wxpusher-bridge import-chrome -config config.local.toml -profile "<profile>" -extension-id "<id>"`.
-5. Start the bridge with `bin/wxpusher-bridge run -config config.local.toml`.
-6. Send a WxPusher test message without a link.
-7. Confirm SQLite has one row in `messages` and a completed original delivery.
-8. Confirm WeCom receives the original message.
-9. Send a WxPusher test message containing `https://example.com`.
-10. Confirm SQLite has an enrichment task and enrichment result.
-11. Confirm the screenshot file exists under the configured screenshot directory.
-12. Confirm WeCom receives the enriched follow-up message.
-13. Stop network access and confirm reconnect events are recorded in `app_events`.
+2. Quit Chrome, then start the existing Chrome profile with `--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222`.
+3. Confirm `curl -sS http://127.0.0.1:9222/json/version` returns Chrome metadata.
+4. Confirm the installed WxPusher extension is enabled and can already receive messages in Chrome.
+5. Copy `configs/config.example.toml` to `config.local.toml`.
+6. Set `receiver.extension_id` to the installed WxPusher extension ID from `chrome://extensions`.
+7. Set `WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL` in the shell or LaunchAgent environment.
+8. Start the bridge with `bin/wxpusher-bridge run -config config.local.toml`.
+9. Confirm `app_events` records `chrome_receiver_worker_attached` and `chrome_receiver_ready`.
+10. Send a WxPusher test message without a link.
+11. Confirm SQLite has one row in `messages` and a completed original delivery.
+12. Confirm WeCom receives the original message.
+13. Send a WxPusher test message containing `https://example.com`.
+14. Confirm SQLite has an enrichment task and enrichment result.
+15. Confirm the screenshot file exists under the configured screenshot directory.
+16. Confirm WeCom receives the enriched follow-up message.
+17. Stop Chrome and confirm receiver failure events are recorded.
 
 Useful SQLite checks:
 
@@ -27,6 +31,7 @@ sqlite3 /var/lib/wxpusher-bridge/bridge.db 'select kind,message,created_at from 
 
 - `go test ./...`: PASS
 - `go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge`: PASS
+- Manual Chrome CDP attach test: not run in this environment
 - Manual WxPusher message test: not run in this environment
 - Manual WeCom delivery test: not run in this environment
 - Manual Headless Chrome screenshot test: not run in this environment

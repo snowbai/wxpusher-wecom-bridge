@@ -12,6 +12,7 @@ import (
 
 type Config struct {
 	WxPusher WxPusherConfig `toml:"wxpusher"`
+	Receiver ReceiverConfig `toml:"receiver"`
 	Storage  StorageConfig  `toml:"storage"`
 	WeCom    WeComConfig    `toml:"wecom"`
 	Browser  BrowserConfig  `toml:"browser"`
@@ -22,6 +23,13 @@ type WxPusherConfig struct {
 	Host     string `toml:"host"`
 	Version  string `toml:"version"`
 	Platform string `toml:"platform"`
+}
+
+type ReceiverConfig struct {
+	Mode                string `toml:"mode"`
+	CDPURL              string `toml:"cdp_url"`
+	ExtensionID         string `toml:"extension_id"`
+	ReadyTimeoutSeconds int    `toml:"ready_timeout_seconds"`
 }
 
 type StorageConfig struct {
@@ -49,19 +57,16 @@ type RetryConfig struct {
 }
 
 func Default() Config {
-	platform := "Chrome-Other"
-	switch runtime.GOOS {
-	case "linux":
-		platform = "Chrome-Linux"
-	case "darwin":
-		platform = "Chrome-Mac"
-	}
-
 	return Config{
 		WxPusher: WxPusherConfig{
 			Host:     "wxpusher.zjiecode.com",
 			Version:  "1.1.0",
-			Platform: platform,
+			Platform: platformForGOOS(runtime.GOOS),
+		},
+		Receiver: ReceiverConfig{
+			Mode:                "chrome-cdp",
+			CDPURL:              "http://127.0.0.1:9222",
+			ReadyTimeoutSeconds: 60,
 		},
 		Storage: StorageConfig{SQLitePath: "/var/lib/wxpusher-bridge/bridge.db"},
 		WeCom:   WeComConfig{WebhookEnv: "WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL"},
@@ -78,6 +83,17 @@ func Default() Config {
 			InitialBackoffSeconds: 2,
 			MaxBackoffSeconds:     60,
 		},
+	}
+}
+
+func platformForGOOS(goos string) string {
+	switch goos {
+	case "windows":
+		return "Chrome-Windows"
+	case "darwin":
+		return "Chrome-Mac"
+	default:
+		return "Chrome-Other"
 	}
 }
 
@@ -109,6 +125,20 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.WxPusher.Platform) == "" {
 		problems = append(problems, "wxpusher.platform is required")
+	}
+	if c.Receiver.Mode != "chrome-cdp" && c.Receiver.Mode != "go-fallback" {
+		problems = append(problems, "receiver.mode must be chrome-cdp or go-fallback")
+	}
+	if c.Receiver.Mode == "chrome-cdp" {
+		if strings.TrimSpace(c.Receiver.CDPURL) == "" {
+			problems = append(problems, "receiver.cdp_url is required when receiver.mode is chrome-cdp")
+		}
+		if err := validateChromeExtensionID(c.Receiver.ExtensionID); err != nil {
+			problems = append(problems, "receiver.extension_id "+err.Error())
+		}
+		if c.Receiver.ReadyTimeoutSeconds < 1 {
+			problems = append(problems, "receiver.ready_timeout_seconds must be >= 1 when receiver.mode is chrome-cdp")
+		}
 	}
 	if strings.TrimSpace(c.Storage.SQLitePath) == "" {
 		problems = append(problems, "storage.sqlite_path is required")
@@ -144,6 +174,18 @@ func (c Config) Validate() error {
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+func validateChromeExtensionID(extensionID string) error {
+	if len(extensionID) != 32 {
+		return errors.New("must be exactly 32 characters")
+	}
+	for _, r := range extensionID {
+		if r < 'a' || r > 'p' {
+			return errors.New("must contain only characters a-p")
+		}
 	}
 	return nil
 }

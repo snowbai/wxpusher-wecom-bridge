@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hhh/wxpusher-wecom-bridge/internal/browser"
+	"github.com/hhh/wxpusher-wecom-bridge/internal/chromereceiver"
 	"github.com/hhh/wxpusher-wecom-bridge/internal/config"
 	"github.com/hhh/wxpusher-wecom-bridge/internal/dispatch"
 	"github.com/hhh/wxpusher-wecom-bridge/internal/identity"
@@ -30,11 +31,22 @@ type pushTokenUpdater interface {
 	UpdatePushToken(context.Context, identity.Identity, string) (identity.Identity, error)
 }
 
+type chromeReceiver interface {
+	Run(context.Context, func(wxpusher.Message), func(chromereceiver.Event)) error
+}
+
+type receiverFunc func(context.Context, func(wxpusher.Message), func(chromereceiver.Event)) error
+
+func (f receiverFunc) Run(ctx context.Context, onMessage func(wxpusher.Message), onEvent func(chromereceiver.Event)) error {
+	return f(ctx, onMessage, onEvent)
+}
+
 type App struct {
-	cfg    config.Config
-	log    *slog.Logger
-	st     store.Store
-	wxHTTP pushTokenUpdater
+	cfg            config.Config
+	log            *slog.Logger
+	st             store.Store
+	wxHTTP         pushTokenUpdater
+	chromeReceiver chromeReceiver
 }
 
 func New(cfg config.Config, log *slog.Logger, st store.Store) *App {
@@ -77,18 +89,17 @@ func (a *App) Run(ctx context.Context) error {
 		return errors.New("app requires store")
 	}
 
-	id, err := a.st.LoadIdentity(ctx)
-	if err != nil {
-		return fmt.Errorf("load identity: %w", err)
-	}
-	id = id.WithDefaults(a.cfg.WxPusher.Platform, a.cfg.WxPusher.Version, id.Source)
-	if err := id.Validate(); err != nil {
-		return fmt.Errorf("stored identity is invalid: %w", err)
-	}
-
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	dispatchSvc, workerErrs := a.startDispatch(runCtx)
+	if a.cfg.Receiver.Mode == "chrome-cdp" {
+		return a.runChromeReceiver(runCtx, cancel, dispatchSvc, workerErrs)
+	}
+	return a.runGoFallback(runCtx, cancel, dispatchSvc, workerErrs)
+}
+
+func (a *App) startDispatch(ctx context.Context) (*dispatch.Service, chan error) {
 	sender := wecom.New(a.cfg.WeCom.WebhookURL, nil)
 	var fetcher dispatch.Fetcher
 	if a.cfg.Browser.Enabled {
@@ -109,12 +120,62 @@ func (a *App) Run(ctx context.Context) error {
 
 	workerErrs := make(chan error, 2)
 	startWorker(workerErrs, "delivery", func() error {
-		return dispatchSvc.RunDeliveryWorker(runCtx, workerPollInterval)
+		return dispatchSvc.RunDeliveryWorker(ctx, workerPollInterval)
 	})
 	if a.cfg.Browser.Enabled {
 		startWorker(workerErrs, "enrichment", func() error {
-			return dispatchSvc.RunEnrichmentWorker(runCtx, workerPollInterval)
+			return dispatchSvc.RunEnrichmentWorker(ctx, workerPollInterval)
 		})
+	}
+	return dispatchSvc, workerErrs
+}
+
+func (a *App) runChromeReceiver(ctx context.Context, cancel context.CancelFunc, dispatchSvc *dispatch.Service, workerErrs <-chan error) error {
+	receiver := a.chromeReceiver
+	if receiver == nil {
+		receiver = chromereceiver.New(chromereceiver.Config{
+			CDPURL:       a.cfg.Receiver.CDPURL,
+			ExtensionID:  a.cfg.Receiver.ExtensionID,
+			WxPusherHost: wsHost(a.cfg.WxPusher.Host),
+			ReadyTimeout: time.Duration(a.cfg.Receiver.ReadyTimeoutSeconds) * time.Second,
+		}, a.log)
+	}
+
+	receiverErr := make(chan error, 1)
+	go func() {
+		receiverErr <- receiver.Run(ctx, func(msg wxpusher.Message) {
+			a.handleObservedWxMessage(ctx, msg, dispatchSvc)
+		}, func(event chromereceiver.Event) {
+			a.log.Info("chrome receiver event", "kind", event.Kind, "message", event.Message)
+			a.recordAppEvent(event.Kind, event.Message)
+		})
+	}()
+
+	select {
+	case err := <-workerErrs:
+		cancel()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-receiverErr:
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			a.recordAppEvent("chrome_receiver_stopped", err.Error())
+		}
+		return err
+	}
+}
+
+func (a *App) runGoFallback(ctx context.Context, cancel context.CancelFunc, dispatchSvc *dispatch.Service, workerErrs <-chan error) error {
+	id, err := a.st.LoadIdentity(ctx)
+	if err != nil {
+		return fmt.Errorf("load identity: %w", err)
+	}
+	id = id.WithDefaults(a.cfg.WxPusher.Platform, a.cfg.WxPusher.Version, id.Source)
+	if err := id.Validate(); err != nil {
+		return fmt.Errorf("stored identity is invalid: %w", err)
 	}
 
 	var idMu sync.Mutex
@@ -127,31 +188,67 @@ func (a *App) Run(ctx context.Context) error {
 			Identity: runID,
 			Logger:   slogPrintfAdapter{log: a.log},
 			OnMessage: func(msg wxpusher.Message) {
-				a.handleWxMessage(runCtx, msg, dispatchSvc, &idMu, &id)
+				a.handleWxMessage(ctx, msg, dispatchSvc, &idMu, &id)
 			},
 		}
 		go func() {
-			wsErr <- wsClient.Run(runCtx)
+			wsErr <- wsClient.Run(ctx)
 		}()
 
 		select {
 		case err := <-workerErrs:
 			cancel()
 			return err
-		case <-runCtx.Done():
-			return runCtx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		case err := <-wsErr:
-			if runCtx.Err() != nil {
-				return runCtx.Err()
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
 			a.recordWebSocketClose(runID, err)
 		}
 
 		delay := Backoff(a.cfg, attempts)
 		attempts++
-		if err := a.waitBeforeReconnect(runCtx, workerErrs, delay); err != nil {
+		if err := a.waitBeforeReconnect(ctx, workerErrs, delay); err != nil {
 			cancel()
 			return err
+		}
+	}
+}
+
+func (a *App) handleObservedWxMessage(ctx context.Context, msg wxpusher.Message, svc *dispatch.Service) {
+	switch msg.Type {
+	case wxpusher.MsgTypeInit:
+		message := "observed wxpusher init message from Chrome extension"
+		if msg.PushToken != "" {
+			message += " pushToken=" + config.RedactSecret(msg.PushToken)
+		}
+		a.recordAppEvent("wxpusher_init_observed", message)
+	case wxpusher.MsgTypeError:
+		message := strings.TrimSpace(strings.Join([]string{msg.Title, msg.Content, msg.URL}, " "))
+		if message == "" {
+			message = "wxpusher error message observed"
+		}
+		a.log.Error("wxpusher error observed", "message", message)
+		a.recordAppEvent("wxpusher_error_observed", message)
+	case wxpusher.MsgTypeUpdate:
+		message := strings.TrimSpace(strings.Join([]string{msg.Title, msg.Content, msg.URL}, " "))
+		if message == "" {
+			message = "wxpusher version update message received"
+		}
+		a.log.Warn("wxpusher version update", "message", message)
+		a.recordAppEvent("wxpusher_version_update", message)
+	case wxpusher.MsgTypeNotification:
+		if err := svc.HandleMessage(ctx, dispatch.IncomingMessage{
+			QID:        msg.QID,
+			MsgType:    msg.Type,
+			Content:    msg.Content,
+			RawPayload: msg.Raw,
+			ReceivedAt: time.Now().UTC(),
+		}); err != nil {
+			a.log.Error("handle wxpusher notification failed", "err", err)
+			a.recordAppEvent("wxpusher_notification_failed", err.Error())
 		}
 	}
 }
