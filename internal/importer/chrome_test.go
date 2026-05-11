@@ -64,7 +64,7 @@ func TestImportChromeReadsRawStringLevelDBValues(t *testing.T) {
 	}
 }
 
-func TestImportChromeIgnoresJSONNonStringLevelDBValues(t *testing.T) {
+func TestImportChromeRejectsJSONNonStringRequiredLevelDBValues(t *testing.T) {
 	profilePath := t.TempDir()
 	dbPath := filepath.Join(profilePath, "Local Extension Settings", testExtensionID)
 	writeLevelDB(t, dbPath, map[string]string{
@@ -75,10 +75,40 @@ func TestImportChromeIgnoresJSONNonStringLevelDBValues(t *testing.T) {
 
 	_, err := ImportChrome(profilePath, testExtensionID, "Chrome-Linux", "1.1.0")
 	if err == nil {
-		t.Fatal("expected validation error for ignored non-string JSON identity values")
+		t.Fatal("expected JSON non-string identity value error")
 	}
-	if !strings.Contains(err.Error(), "deviceUuid is required") || !strings.Contains(err.Error(), "deviceToken is required") {
+	if !strings.Contains(err.Error(), "JSON storage value must be a string") {
 		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestImportChromeRejectsJSONNonStringPushTokenLevelDBValues(t *testing.T) {
+	tests := map[string]string{
+		"object":  `{"value":"pt"}`,
+		"array":   `["pt"]`,
+		"number":  `123`,
+		"boolean": `true`,
+		"null":    `null`,
+	}
+
+	for name, pushToken := range tests {
+		t.Run(name, func(t *testing.T) {
+			profilePath := t.TempDir()
+			dbPath := filepath.Join(profilePath, "Local Extension Settings", testExtensionID)
+			writeLevelDB(t, dbPath, map[string]string{
+				"deviceUuid":  `"du"`,
+				"deviceToken": `"dt"`,
+				"pushToken":   pushToken,
+			})
+
+			_, err := ImportChrome(profilePath, testExtensionID, "Chrome-Linux", "1.1.0")
+			if err == nil {
+				t.Fatal("expected JSON non-string pushToken error")
+			}
+			if !strings.Contains(err.Error(), "pushToken") {
+				t.Fatalf("error = %q", err)
+			}
+		})
 	}
 }
 

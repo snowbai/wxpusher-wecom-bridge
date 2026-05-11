@@ -105,7 +105,11 @@ func readLevelDBIdentity(path string, keyFilter func(string) bool) (map[string]s
 		if _, ok := chromeIdentityFields[normalizedKey]; !ok {
 			continue
 		}
-		values[normalizedKey] = decodeChromeStorageValue(iter.Value())
+		value, err := decodeChromeStorageValue(iter.Value())
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", normalizedKey, err)
+		}
+		values[normalizedKey] = value
 	}
 	if err := iter.Error(); err != nil {
 		return nil, err
@@ -123,17 +127,17 @@ func normalizeChromeStorageKey(key string) string {
 	return key
 }
 
-func decodeChromeStorageValue(value []byte) string {
+func decodeChromeStorageValue(value []byte) (string, error) {
 	raw := strings.TrimSpace(string(value))
-	var decoded string
+	var decoded any
 	if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
-		return decoded
+		value, ok := decoded.(string)
+		if !ok {
+			return "", errors.New("JSON storage value must be a string")
+		}
+		return value, nil
 	}
-	var nonStringJSON any
-	if err := json.Unmarshal([]byte(raw), &nonStringJSON); err == nil {
-		return ""
-	}
-	return raw
+	return raw, nil
 }
 
 func mergeIdentityValues(dst, src map[string]string) {
