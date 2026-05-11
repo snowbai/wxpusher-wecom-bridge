@@ -1,6 +1,8 @@
 package browser
 
 import (
+	"context"
+	"net"
 	"reflect"
 	"testing"
 )
@@ -49,8 +51,8 @@ func TestTrimSummaryKeepsRuneBoundary(t *testing.T) {
 }
 
 func TestValidateFetchURLAcceptsPublicHTTPS(t *testing.T) {
-	if err := validateFetchURL("https://example.com/a"); err != nil {
-		t.Fatalf("validateFetchURL() error = %v, want nil", err)
+	if err := validateFetchURLWithResolver(context.Background(), "https://example.com/a", staticResolver("93.184.216.34")); err != nil {
+		t.Fatalf("validateFetchURLWithResolver() error = %v, want nil", err)
 	}
 }
 
@@ -65,10 +67,47 @@ func TestValidateFetchURLRejectsUnsafeURLs(t *testing.T) {
 
 	for _, input := range tests {
 		t.Run(input, func(t *testing.T) {
-			if err := validateFetchURL(input); err == nil {
-				t.Fatalf("validateFetchURL(%q) error = nil, want error", input)
+			if err := validateFetchURLWithResolver(context.Background(), input, staticResolver("93.184.216.34")); err == nil {
+				t.Fatalf("validateFetchURLWithResolver(%q) error = nil, want error", input)
 			}
 		})
+	}
+}
+
+func TestValidateFetchURLWithResolverAcceptsPublicHostname(t *testing.T) {
+	if err := validateFetchURLWithResolver(context.Background(), "https://public.test/a", staticResolver("93.184.216.34")); err != nil {
+		t.Fatalf("validateFetchURLWithResolver() error = %v, want nil", err)
+	}
+}
+
+func TestValidateFetchURLWithResolverRejectsInternalHostname(t *testing.T) {
+	if err := validateFetchURLWithResolver(context.Background(), "https://internal.test/a", staticResolver("10.0.0.5")); err == nil {
+		t.Fatal("validateFetchURLWithResolver() error = nil, want error")
+	}
+}
+
+func TestValidateFetchURLRejectsUnsafeIPv6Literals(t *testing.T) {
+	tests := []string{
+		"http://[::1]/x",
+		"http://[fe80::1]/x",
+		"http://[fd00::1]/x",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			if err := validateFetchURLWithResolver(context.Background(), input, staticResolver("93.184.216.34")); err == nil {
+				t.Fatalf("validateFetchURLWithResolver(%q) error = nil, want error", input)
+			}
+		})
+	}
+}
+
+func TestIsFetchURLAllowedWithResolver(t *testing.T) {
+	if !isFetchURLAllowed(context.Background(), "https://public.test/a", staticResolver("93.184.216.34")) {
+		t.Fatal("isFetchURLAllowed() = false, want true")
+	}
+	if isFetchURLAllowed(context.Background(), "https://internal.test/a", staticResolver("10.0.0.5")) {
+		t.Fatal("isFetchURLAllowed() = true, want false")
 	}
 }
 
@@ -81,5 +120,15 @@ func TestEffectiveSummaryLimit(t *testing.T) {
 	}
 	if got := effectiveSummaryLimit(-1); got != defaultSummaryMaxChars {
 		t.Fatalf("effectiveSummaryLimit(-1) = %d, want %d", got, defaultSummaryMaxChars)
+	}
+}
+
+func staticResolver(addrs ...string) func(context.Context, string) ([]net.IP, error) {
+	return func(context.Context, string) ([]net.IP, error) {
+		ips := make([]net.IP, 0, len(addrs))
+		for _, addr := range addrs {
+			ips = append(ips, net.ParseIP(addr))
+		}
+		return ips, nil
 	}
 }
