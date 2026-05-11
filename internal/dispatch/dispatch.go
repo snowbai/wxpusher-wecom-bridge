@@ -251,14 +251,14 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 	if result.URL == "" {
 		result.URL = task.URL
 	}
-	statusCtx, cancel := statusContext()
-	defer cancel()
-	if err := s.store.SaveEnrichment(statusCtx, store.Enrichment{
-		MessageID:  task.MessageID,
-		URL:        result.URL,
-		Title:      result.Title,
-		Summary:    result.Summary,
-		Screenshot: result.Screenshot,
+	if err := withStatusContext(func(statusCtx context.Context) error {
+		return s.store.SaveEnrichment(statusCtx, store.Enrichment{
+			MessageID:  task.MessageID,
+			URL:        result.URL,
+			Title:      result.Title,
+			Summary:    result.Summary,
+			Screenshot: result.Screenshot,
+		})
 	}); err != nil {
 		return err
 	}
@@ -269,11 +269,14 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		result.Summary,
 		result.Screenshot,
 	).Content
-	if _, err := s.store.EnqueueDelivery(statusCtx, store.DeliveryTask{
-		MessageID:   task.MessageID,
-		Kind:        store.DeliveryEnriched,
-		Payload:     payload,
-		NextAttempt: time.Now().UTC(),
+	if err := withStatusContext(func(statusCtx context.Context) error {
+		_, err := s.store.EnqueueDelivery(statusCtx, store.DeliveryTask{
+			MessageID:   task.MessageID,
+			Kind:        store.DeliveryEnriched,
+			Payload:     payload,
+			NextAttempt: time.Now().UTC(),
+		})
+		return err
 	}); err != nil {
 		nextAttempts := task.Attempts + 1
 		statusCtx, cancel := statusContext()
@@ -283,7 +286,9 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		}
 		return s.store.MarkEnrichmentRetry(statusCtx, task.ID, nextAttempts, s.nextAttempt(nextAttempts), err.Error())
 	}
-	return s.store.MarkEnrichmentDone(statusCtx, task.ID)
+	return withStatusContext(func(statusCtx context.Context) error {
+		return s.store.MarkEnrichmentDone(statusCtx, task.ID)
+	})
 }
 
 func (s *Service) releaseDeliveryTask(_ context.Context, task store.DeliveryTask, cause error) error {
@@ -302,6 +307,12 @@ func (s *Service) releaseEnrichmentTask(_ context.Context, task store.Enrichment
 		return err
 	}
 	return cause
+}
+
+func withStatusContext(fn func(context.Context) error) error {
+	ctx, cancel := statusContext()
+	defer cancel()
+	return fn(ctx)
 }
 
 func statusContext() (context.Context, context.CancelFunc) {

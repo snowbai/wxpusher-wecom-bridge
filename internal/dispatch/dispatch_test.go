@@ -401,6 +401,20 @@ func TestEnrichmentProcessCancellationLeavesUnprocessedTaskClaimable(t *testing.
 	}
 }
 
+func TestEnrichmentSuccessUsesFreshContextForMarkDone(t *testing.T) {
+	ctx := context.Background()
+	st := &enrichmentContextTrackingStore{}
+	svc := New(st, nil, &fakeFetcher{result: EnrichmentResult{Title: "Example", Summary: "summary"}}, Config{})
+	task := store.EnrichmentTask{ID: 9, MessageID: 42, URL: "https://example.com"}
+
+	if err := svc.processEnrichmentTask(ctx, task); err != nil {
+		t.Fatalf("processEnrichmentTask() error = %v", err)
+	}
+	if st.markDoneCalls != 1 {
+		t.Fatalf("MarkEnrichmentDone calls = %d, want 1", st.markDoneCalls)
+	}
+}
+
 func TestEnrichmentWorkerDoesNotMarkDoneWhenEnrichedDeliveryEnqueueFails(t *testing.T) {
 	ctx := context.Background()
 	st := &enrichmentEnqueueFailStore{enqueueErr: errors.New("enqueue failed")}
@@ -509,6 +523,31 @@ func TestWorkersRequireDependencies(t *testing.T) {
 	if err := New(st, nil, nil, Config{}).RunEnrichmentWorker(ctx, time.Millisecond); err == nil {
 		t.Fatal("RunEnrichmentWorker() error = nil, want missing fetcher error")
 	}
+}
+
+type enrichmentContextTrackingStore struct {
+	store.Store
+	saveCtx       context.Context
+	enqueueCtx    context.Context
+	markDoneCalls int
+}
+
+func (s *enrichmentContextTrackingStore) SaveEnrichment(ctx context.Context, _ store.Enrichment) error {
+	s.saveCtx = ctx
+	return nil
+}
+
+func (s *enrichmentContextTrackingStore) EnqueueDelivery(ctx context.Context, _ store.DeliveryTask) (int64, error) {
+	s.enqueueCtx = ctx
+	return 1, nil
+}
+
+func (s *enrichmentContextTrackingStore) MarkEnrichmentDone(ctx context.Context, _ int64) error {
+	s.markDoneCalls++
+	if ctx == s.saveCtx || ctx == s.enqueueCtx {
+		return errors.New("MarkEnrichmentDone reused prior status context")
+	}
+	return nil
 }
 
 type enrichmentEnqueueFailStore struct {
