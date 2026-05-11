@@ -30,11 +30,56 @@ func TestExtractURLsRepeatedURLsPreserveOrder(t *testing.T) {
 	}
 }
 
+func TestExtractURLsTrimsMarkdownDelimiters(t *testing.T) {
+	got := ExtractURLs("see (https://example.com/a). and [https://example.com/b]")
+	want := []string{"https://example.com/a", "https://example.com/b"}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractURLs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestTrimSummaryKeepsRuneBoundary(t *testing.T) {
 	got := TrimSummary("你好世界", 3)
 	want := "你好世"
 
 	if got != want {
 		t.Fatalf("TrimSummary() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateFetchURLAcceptsPublicHTTPS(t *testing.T) {
+	if err := validateFetchURL("https://example.com/a"); err != nil {
+		t.Fatalf("validateFetchURL() error = %v, want nil", err)
+	}
+}
+
+func TestValidateFetchURLRejectsUnsafeURLs(t *testing.T) {
+	tests := []string{
+		"file:///etc/passwd",
+		"http://localhost/x",
+		"http://127.0.0.1/x",
+		"http://10.0.0.1/x",
+		"://bad",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			if err := validateFetchURL(input); err == nil {
+				t.Fatalf("validateFetchURL(%q) error = nil, want error", input)
+			}
+		})
+	}
+}
+
+func TestEffectiveSummaryLimit(t *testing.T) {
+	if got := effectiveSummaryLimit(42); got != 42 {
+		t.Fatalf("effectiveSummaryLimit(42) = %d, want 42", got)
+	}
+	if got := effectiveSummaryLimit(0); got != defaultSummaryMaxChars {
+		t.Fatalf("effectiveSummaryLimit(0) = %d, want %d", got, defaultSummaryMaxChars)
+	}
+	if got := effectiveSummaryLimit(-1); got != defaultSummaryMaxChars {
+		t.Fatalf("effectiveSummaryLimit(-1) = %d, want %d", got, defaultSummaryMaxChars)
 	}
 }
