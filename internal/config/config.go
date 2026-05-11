@@ -101,19 +101,19 @@ func Load(path string) (Config, error) {
 
 func (c Config) Validate() error {
 	var problems []string
-	if c.WxPusher.Host == "" {
+	if strings.TrimSpace(c.WxPusher.Host) == "" {
 		problems = append(problems, "wxpusher.host is required")
 	}
-	if c.WxPusher.Version == "" {
+	if strings.TrimSpace(c.WxPusher.Version) == "" {
 		problems = append(problems, "wxpusher.version is required")
 	}
-	if c.WxPusher.Platform == "" {
+	if strings.TrimSpace(c.WxPusher.Platform) == "" {
 		problems = append(problems, "wxpusher.platform is required")
 	}
-	if c.Storage.SQLitePath == "" {
+	if strings.TrimSpace(c.Storage.SQLitePath) == "" {
 		problems = append(problems, "storage.sqlite_path is required")
 	}
-	if c.WeCom.WebhookURL == "" {
+	if strings.TrimSpace(c.WeCom.WebhookURL) == "" {
 		problems = append(problems, "wecom webhook URL is required through wecom.webhook_url or wecom.webhook_env")
 	}
 	if c.Retry.WeComMaxAttempts < 1 {
@@ -122,8 +122,25 @@ func (c Config) Validate() error {
 	if c.Retry.EnrichmentMaxAttempts < 1 {
 		problems = append(problems, "retry.enrichment_max_attempts must be >= 1")
 	}
-	if c.Browser.Enabled && c.Browser.TimeoutSeconds < 1 {
-		problems = append(problems, "browser.timeout_seconds must be >= 1 when browser is enabled")
+	if c.Retry.InitialBackoffSeconds < 1 {
+		problems = append(problems, "retry.initial_backoff_seconds must be >= 1")
+	}
+	if c.Retry.MaxBackoffSeconds < c.Retry.InitialBackoffSeconds {
+		problems = append(problems, "retry.max_backoff_seconds must be >= retry.initial_backoff_seconds")
+	}
+	if c.Browser.Enabled {
+		if strings.TrimSpace(c.Browser.ChromePath) == "" {
+			problems = append(problems, "browser.chrome_path is required when browser is enabled")
+		}
+		if strings.TrimSpace(c.Browser.ScreenshotDir) == "" {
+			problems = append(problems, "browser.screenshot_dir is required when browser is enabled")
+		}
+		if c.Browser.TimeoutSeconds < 1 {
+			problems = append(problems, "browser.timeout_seconds must be >= 1 when browser is enabled")
+		}
+		if c.Browser.SummaryMaxChars < 1 {
+			problems = append(problems, "browser.summary_max_chars must be >= 1 when browser is enabled")
+		}
 	}
 	if len(problems) > 0 {
 		return errors.New(strings.Join(problems, "; "))
