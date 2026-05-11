@@ -3,6 +3,7 @@ package importer
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,8 +23,8 @@ func ImportChrome(profilePath, extensionID, defaultPlatform, defaultVersion stri
 	if strings.TrimSpace(profilePath) == "" {
 		return identity.Identity{}, errors.New("profile path is required")
 	}
-	if strings.TrimSpace(extensionID) == "" {
-		return identity.Identity{}, errors.New("extension id is required")
+	if err := validateChromeExtensionID(extensionID); err != nil {
+		return identity.Identity{}, err
 	}
 
 	values := make(map[string]string)
@@ -34,7 +35,7 @@ func ImportChrome(profilePath, extensionID, defaultPlatform, defaultVersion stri
 			return ok
 		})
 		if err != nil {
-			return identity.Identity{}, err
+			return identity.Identity{}, fmt.Errorf("read Local Extension Settings: %w", err)
 		}
 		mergeIdentityValues(values, localValues)
 	}
@@ -45,7 +46,7 @@ func ImportChrome(profilePath, extensionID, defaultPlatform, defaultVersion stri
 			return strings.Contains(key, "chrome-extension://"+extensionID)
 		})
 		if err != nil {
-			return identity.Identity{}, err
+			return identity.Identity{}, fmt.Errorf("read Local Storage: %w", err)
 		}
 		mergeIdentityValues(values, localValues)
 	}
@@ -60,6 +61,18 @@ func ImportChrome(profilePath, extensionID, defaultPlatform, defaultVersion stri
 		return identity.Identity{}, err
 	}
 	return id, nil
+}
+
+func validateChromeExtensionID(extensionID string) error {
+	if len(extensionID) != 32 {
+		return errors.New("extension id must be exactly 32 characters")
+	}
+	for _, r := range extensionID {
+		if r < 'a' || r > 'p' {
+			return errors.New("extension id must contain only characters a-p")
+		}
+	}
+	return nil
 }
 
 func readLevelDBIdentity(path string, keyFilter func(string) bool) (map[string]string, error) {
@@ -115,6 +128,10 @@ func decodeChromeStorageValue(value []byte) string {
 	var decoded string
 	if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
 		return decoded
+	}
+	var nonStringJSON any
+	if err := json.Unmarshal([]byte(raw), &nonStringJSON); err == nil {
+		return ""
 	}
 	return raw
 }

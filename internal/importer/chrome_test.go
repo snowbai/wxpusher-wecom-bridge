@@ -1,7 +1,9 @@
 package importer
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/syndtr/goleveldb/leveldb"
@@ -62,6 +64,24 @@ func TestImportChromeReadsRawStringLevelDBValues(t *testing.T) {
 	}
 }
 
+func TestImportChromeIgnoresJSONNonStringLevelDBValues(t *testing.T) {
+	profilePath := t.TempDir()
+	dbPath := filepath.Join(profilePath, "Local Extension Settings", testExtensionID)
+	writeLevelDB(t, dbPath, map[string]string{
+		"deviceUuid":  `{"value":"du"}`,
+		"deviceToken": `123`,
+		"pushToken":   "pt",
+	})
+
+	_, err := ImportChrome(profilePath, testExtensionID, "Chrome-Linux", "1.1.0")
+	if err == nil {
+		t.Fatal("expected validation error for ignored non-string JSON identity values")
+	}
+	if !strings.Contains(err.Error(), "deviceUuid is required") || !strings.Contains(err.Error(), "deviceToken is required") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
 func TestImportChromeReadsLocalStorageExtensionKeys(t *testing.T) {
 	profilePath := t.TempDir()
 	dbPath := filepath.Join(profilePath, "Local Storage", "leveldb")
@@ -91,6 +111,65 @@ func TestImportChromeRequiresProfilePathAndExtensionID(t *testing.T) {
 	}
 	if _, err := ImportChrome(t.TempDir(), "", "Chrome-Linux", "1.1.0"); err == nil {
 		t.Fatal("expected missing extension id error")
+	}
+}
+
+func TestImportChromeRejectsInvalidExtensionIDs(t *testing.T) {
+	tests := []string{
+		"../x",
+		"abc/def",
+		"abcdefghijklmnop",
+		"abcdefghijklmnopabcdefghijklmnzq",
+	}
+
+	for _, extensionID := range tests {
+		t.Run(extensionID, func(t *testing.T) {
+			_, err := ImportChrome(t.TempDir(), extensionID, "Chrome-Linux", "1.1.0")
+			if err == nil {
+				t.Fatal("expected invalid extension id error")
+			}
+			if !strings.Contains(err.Error(), "extension id") {
+				t.Fatalf("error = %q", err)
+			}
+		})
+	}
+}
+
+func TestImportChromeWrapsLocalExtensionSettingsErrors(t *testing.T) {
+	profilePath := t.TempDir()
+	dbPath := filepath.Join(profilePath, "Local Extension Settings", testExtensionID)
+	if err := os.MkdirAll(dbPath, 0o700); err != nil {
+		t.Fatalf("mkdir corrupt db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dbPath, "CURRENT"), []byte("missing manifest\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt db file: %v", err)
+	}
+
+	_, err := ImportChrome(profilePath, testExtensionID, "Chrome-Linux", "1.1.0")
+	if err == nil {
+		t.Fatal("expected corrupt leveldb error")
+	}
+	if !strings.Contains(err.Error(), "Local Extension Settings") {
+		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestImportChromeWrapsLocalStorageErrors(t *testing.T) {
+	profilePath := t.TempDir()
+	dbPath := filepath.Join(profilePath, "Local Storage", "leveldb")
+	if err := os.MkdirAll(dbPath, 0o700); err != nil {
+		t.Fatalf("mkdir corrupt db: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dbPath, "CURRENT"), []byte("missing manifest\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt db file: %v", err)
+	}
+
+	_, err := ImportChrome(profilePath, testExtensionID, "Chrome-Linux", "1.1.0")
+	if err == nil {
+		t.Fatal("expected corrupt leveldb error")
+	}
+	if !strings.Contains(err.Error(), "Local Storage") {
+		t.Fatalf("error = %q", err)
 	}
 }
 
