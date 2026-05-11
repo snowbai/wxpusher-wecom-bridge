@@ -9,9 +9,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
-const responseBodyLimit = 1 << 20
+const (
+	responseBodyLimit = 1 << 20
+	defaultTimeout    = 15 * time.Second
+)
 
 type MarkdownPayload struct {
 	Content string
@@ -24,7 +28,7 @@ type Client struct {
 
 func New(webhook string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	return &Client{webhook: webhook, http: httpClient}
 }
@@ -89,7 +93,7 @@ func (c *Client) Send(ctx context.Context, payload MarkdownPayload) error {
 		ErrMsg  string `json:"errmsg"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, responseBodyLimit)).Decode(&result); err != nil {
-		return err
+		return fmt.Errorf("decode wecom response failed: %w", err)
 	}
 	if result.ErrCode != 0 {
 		return fmt.Errorf("wecom send failed: errcode=%d errmsg=%s", result.ErrCode, result.ErrMsg)

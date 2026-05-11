@@ -9,10 +9,38 @@ import (
 	"testing"
 )
 
+func TestNewWithNilHTTPClientUsesTimeout(t *testing.T) {
+	client := New("x", nil)
+
+	if client.http == nil {
+		t.Fatal("http client is nil")
+	}
+	if client.http.Timeout <= 0 {
+		t.Fatalf("http timeout = %s, want positive timeout", client.http.Timeout)
+	}
+}
+
 func TestBuildOriginalMarkdown(t *testing.T) {
 	payload := BuildOriginalMarkdown("q1", "hello")
 
 	for _, want := range []string{"WxPusher 通知", "q1", "hello"} {
+		if !strings.Contains(payload.Content, want) {
+			t.Fatalf("content = %q, want to contain %q", payload.Content, want)
+		}
+	}
+}
+
+func TestBuildEnrichedMarkdown(t *testing.T) {
+	payload := BuildEnrichedMarkdown("q1", "https://example.test/page", "Page Title", "summary text", "/tmp/screenshot.png")
+
+	for _, want := range []string{
+		"WxPusher 链接富化",
+		"q1",
+		"https://example.test/page",
+		"Page Title",
+		"summary text",
+		"/tmp/screenshot.png",
+	} {
 		if !strings.Contains(payload.Content, want) {
 			t.Fatalf("content = %q, want to contain %q", payload.Content, want)
 		}
@@ -75,5 +103,25 @@ func TestSendReturnsErrorForWeComErrcode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "40001") {
 		t.Fatalf("error = %q, want errcode", err)
+	}
+}
+
+func TestSendReturnsSanitizedErrorForMalformedJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{not json`))
+	}))
+	defer server.Close()
+
+	webhook := server.URL + "?key=secret-webhook-key"
+	err := New(webhook, server.Client()).Send(context.Background(), MarkdownPayload{Content: "hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "decode wecom response failed") {
+		t.Fatalf("error = %q, want decode context", err)
+	}
+	if strings.Contains(err.Error(), "secret-webhook-key") {
+		t.Fatalf("error = %q, must not contain webhook key", err)
 	}
 }
