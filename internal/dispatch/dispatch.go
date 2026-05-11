@@ -14,7 +14,7 @@ import (
 const (
 	defaultInitialBackoff = 2 * time.Second
 	defaultMaxBackoff     = 60 * time.Second
-	defaultClaimLimit     = 10
+	defaultClaimLimit     = 1
 )
 
 type Sender interface {

@@ -23,6 +23,32 @@ func (s *fakeSender) SendMarkdown(_ context.Context, content string) error {
 	return s.err
 }
 
+type cancelingSender struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (s *cancelingSender) SendMarkdown(_ context.Context, _ string) error {
+	s.calls++
+	if s.calls == 1 {
+		s.cancel()
+	}
+	return nil
+}
+
+type cancelingFetcher struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (f *cancelingFetcher) Fetch(_ context.Context, url string) (EnrichmentResult, error) {
+	f.calls++
+	if f.calls == 1 {
+		f.cancel()
+	}
+	return EnrichmentResult{URL: url, Title: "Title", Summary: "summary", Screenshot: "/tmp/shot.png"}, nil
+}
+
 type fakeFetcher struct {
 	result EnrichmentResult
 	err    error
@@ -146,6 +172,40 @@ func TestDeliveryWorkerSendsAndMarksDone(t *testing.T) {
 	}
 }
 
+func TestDeliveryProcessCancellationLeavesUnprocessedTaskClaimable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st := openTestStore(t)
+	sender := &cancelingSender{cancel: cancel}
+	svc := New(st, sender, nil, Config{})
+	now := time.Now().UTC()
+
+	if err := svc.HandleMessage(context.Background(), IncomingMessage{QID: "q-cancel-delivery-1", MsgType: 20001, Content: "first", ReceivedAt: now}); err != nil {
+		t.Fatalf("first HandleMessage() error = %v", err)
+	}
+	if err := svc.HandleMessage(context.Background(), IncomingMessage{QID: "q-cancel-delivery-2", MsgType: 20001, Content: "second", ReceivedAt: now}); err != nil {
+		t.Fatalf("second HandleMessage() error = %v", err)
+	}
+
+	err := svc.processDeliveryOnce(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("processDeliveryOnce() error = %v, want nil or context.Canceled", err)
+	}
+	if sender.calls != 1 {
+		t.Fatalf("sender calls = %d, want 1", sender.calls)
+	}
+
+	claimed, err := st.ClaimDeliveryTasks(context.Background(), 10, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimable delivery tasks = %d, want 1", len(claimed))
+	}
+	if !strings.Contains(claimed[0].Payload, "q-cancel-delivery-2") {
+		t.Fatalf("claimable delivery payload = %q, want second message", claimed[0].Payload)
+	}
+}
+
 func TestDeliveryWorkerRetriesThenFails(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
@@ -220,6 +280,40 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	wantPayload := wecom.BuildEnrichedMarkdown("message-1", "https://example.com", "Example", "summary", "/tmp/example.png").Content
 	if deliveries[1].Payload != wantPayload {
 		t.Fatalf("enriched payload = %q, want %q", deliveries[1].Payload, wantPayload)
+	}
+}
+
+func TestEnrichmentProcessCancellationLeavesUnprocessedTaskClaimable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	st := openTestStore(t)
+	fetcher := &cancelingFetcher{cancel: cancel}
+	svc := New(st, nil, fetcher, Config{})
+	now := time.Now().UTC()
+
+	if err := svc.HandleMessage(context.Background(), IncomingMessage{QID: "q-cancel-enrich-1", MsgType: 20001, Content: "first https://one.example", ReceivedAt: now}); err != nil {
+		t.Fatalf("first HandleMessage() error = %v", err)
+	}
+	if err := svc.HandleMessage(context.Background(), IncomingMessage{QID: "q-cancel-enrich-2", MsgType: 20001, Content: "second https://two.example", ReceivedAt: now}); err != nil {
+		t.Fatalf("second HandleMessage() error = %v", err)
+	}
+
+	err := svc.processEnrichmentOnce(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("processEnrichmentOnce() error = %v, want nil or context.Canceled", err)
+	}
+	if fetcher.calls != 1 {
+		t.Fatalf("fetcher calls = %d, want 1", fetcher.calls)
+	}
+
+	claimed, err := st.ClaimEnrichmentTasks(context.Background(), 10, time.Now().UTC().Add(time.Second))
+	if err != nil {
+		t.Fatalf("ClaimEnrichmentTasks() error = %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimable enrichment tasks = %d, want 1", len(claimed))
+	}
+	if claimed[0].URL != "https://two.example" {
+		t.Fatalf("claimable enrichment URL = %q, want https://two.example", claimed[0].URL)
 	}
 }
 
