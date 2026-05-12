@@ -140,7 +140,7 @@ func TestSQLiteTaskLifecycle(t *testing.T) {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
 
-	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload"})
+	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", NextAttempt: now.Add(-time.Second)})
 	if err != nil {
 		t.Fatalf("EnqueueDelivery() error = %v", err)
 	}
@@ -175,7 +175,7 @@ func TestSQLiteEnqueueDeliveryForcesPendingStatus(t *testing.T) {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
 
-	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", Status: TaskFailed})
+	taskID, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", Status: TaskFailed, NextAttempt: now.Add(-time.Second)})
 	if err != nil {
 		t.Fatalf("EnqueueDelivery() error = %v", err)
 	}
@@ -199,7 +199,7 @@ func TestSQLiteEnqueueDeliveryDedupesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
-	task := DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload"}
+	task := DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", NextAttempt: now.Add(-time.Second)}
 
 	firstID, err := st.EnqueueDelivery(ctx, task)
 	if err != nil {
@@ -238,7 +238,7 @@ func TestSQLiteClaimDeliveryTasksDoesNotReturnAlreadyRunningTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
-	if _, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload"}); err != nil {
+	if _, err := st.EnqueueDelivery(ctx, DeliveryTask{MessageID: msg.ID, Kind: DeliveryOriginal, Payload: "payload", NextAttempt: now.Add(-time.Second)}); err != nil {
 		t.Fatalf("EnqueueDelivery() error = %v", err)
 	}
 
@@ -267,7 +267,7 @@ func TestSQLiteEnrichmentLifecycle(t *testing.T) {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
 
-	taskID, err := st.EnqueueEnrichment(ctx, EnrichmentTask{MessageID: msg.ID, URL: "https://example.com"})
+	taskID, err := st.EnqueueEnrichment(ctx, EnrichmentTask{MessageID: msg.ID, URL: "https://example.com", NextAttempt: now.Add(-time.Second)})
 	if err != nil {
 		t.Fatalf("EnqueueEnrichment() error = %v", err)
 	}
@@ -305,7 +305,7 @@ func TestSQLiteEnqueueEnrichmentForcesPendingStatus(t *testing.T) {
 		t.Fatalf("SaveMessage() error = %v", err)
 	}
 
-	taskID, err := st.EnqueueEnrichment(ctx, EnrichmentTask{MessageID: msg.ID, URL: "https://example.com", Status: TaskFailed})
+	taskID, err := st.EnqueueEnrichment(ctx, EnrichmentTask{MessageID: msg.ID, URL: "https://example.com", Status: TaskFailed, NextAttempt: now.Add(-time.Second)})
 	if err != nil {
 		t.Fatalf("EnqueueEnrichment() error = %v", err)
 	}
