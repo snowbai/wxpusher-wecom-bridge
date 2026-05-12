@@ -25,8 +25,9 @@ type SaveMessageResult struct {
 type DeliveryKind string
 
 const (
-	DeliveryOriginal DeliveryKind = "original"
-	DeliveryEnriched DeliveryKind = "enriched"
+	DeliveryOriginal   DeliveryKind = "original"
+	DeliveryEnriched   DeliveryKind = "enriched"
+	DeliveryScreenshot DeliveryKind = "screenshot"
 )
 
 type TaskStatus string

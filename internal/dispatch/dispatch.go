@@ -20,6 +20,7 @@ const (
 
 type Sender interface {
 	SendMarkdown(context.Context, string) error
+	SendImageFile(context.Context, string) error
 }
 
 type Fetcher interface {
@@ -192,7 +193,7 @@ func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTa
 	if s.store == nil {
 		return errors.New("dispatch service requires store")
 	}
-	if err := s.sender.SendMarkdown(ctx, task.Payload); err != nil {
+	if err := s.sendDelivery(ctx, task); err != nil {
 		nextAttempts := task.Attempts + 1
 		statusCtx, cancel := statusContext()
 		defer cancel()
@@ -204,6 +205,15 @@ func (s *Service) processDeliveryTask(ctx context.Context, task store.DeliveryTa
 	statusCtx, cancel := statusContext()
 	defer cancel()
 	return s.store.MarkDeliveryDone(statusCtx, task.ID, "ok")
+}
+
+func (s *Service) sendDelivery(ctx context.Context, task store.DeliveryTask) error {
+	switch task.Kind {
+	case store.DeliveryScreenshot:
+		return s.sender.SendImageFile(ctx, task.Payload)
+	default:
+		return s.sender.SendMarkdown(ctx, task.Payload)
+	}
 }
 
 func (s *Service) processEnrichmentOnce(ctx context.Context) error {
@@ -279,6 +289,19 @@ func (s *Service) processEnrichmentTask(ctx context.Context, task store.Enrichme
 		return err
 	}); err != nil {
 		return s.retryOrFailEnrichment(task, err)
+	}
+	if result.Screenshot != "" {
+		if err := withStatusContext(func(statusCtx context.Context) error {
+			_, err := s.store.EnqueueDelivery(statusCtx, store.DeliveryTask{
+				MessageID:   task.MessageID,
+				Kind:        store.DeliveryScreenshot,
+				Payload:     result.Screenshot,
+				NextAttempt: time.Now().UTC(),
+			})
+			return err
+		}); err != nil {
+			return s.retryOrFailEnrichment(task, err)
+		}
 	}
 	if err := withStatusContext(func(statusCtx context.Context) error {
 		return s.store.MarkEnrichmentDone(statusCtx, task.ID)

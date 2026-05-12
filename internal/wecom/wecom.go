@@ -3,11 +3,15 @@ package wecom
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -19,6 +23,11 @@ const (
 
 type MarkdownPayload struct {
 	Content string `json:"content"`
+}
+
+type ImagePayload struct {
+	Base64 string `json:"base64"`
+	MD5    string `json:"md5"`
 }
 
 type Client struct {
@@ -59,6 +68,14 @@ func BuildEnrichedMarkdown(qid, pageURL, title, summary, screenshotPath string) 
 	}, "\n")}
 }
 
+func BuildImagePayload(imageBytes []byte) ImagePayload {
+	sum := md5.Sum(imageBytes)
+	return ImagePayload{
+		Base64: base64.StdEncoding.EncodeToString(imageBytes),
+		MD5:    hex.EncodeToString(sum[:]),
+	}
+}
+
 func (c *Client) Send(ctx context.Context, payload MarkdownPayload) error {
 	body, err := json.Marshal(struct {
 		MsgType  string          `json:"msgtype"`
@@ -70,7 +87,32 @@ func (c *Client) Send(ctx context.Context, payload MarkdownPayload) error {
 	if err != nil {
 		return err
 	}
+	return c.postJSON(ctx, body)
+}
 
+func (c *Client) SendImageFile(ctx context.Context, path string) error {
+	imageBytes, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read image file: %w", err)
+	}
+	return c.SendImage(ctx, imageBytes)
+}
+
+func (c *Client) SendImage(ctx context.Context, imageBytes []byte) error {
+	body, err := json.Marshal(struct {
+		MsgType string       `json:"msgtype"`
+		Image   ImagePayload `json:"image"`
+	}{
+		MsgType: "image",
+		Image:   BuildImagePayload(imageBytes),
+	})
+	if err != nil {
+		return err
+	}
+	return c.postJSON(ctx, body)
+}
+
+func (c *Client) postJSON(ctx context.Context, body []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.webhook, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("create wecom request failed")

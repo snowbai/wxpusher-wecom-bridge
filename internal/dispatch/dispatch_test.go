@@ -12,15 +12,24 @@ import (
 )
 
 type fakeSender struct {
-	err   error
-	sent  []string
-	calls int
+	err        error
+	imageErr   error
+	sent       []string
+	imagePaths []string
+	calls      int
+	imageCalls int
 }
 
 func (s *fakeSender) SendMarkdown(_ context.Context, content string) error {
 	s.calls++
 	s.sent = append(s.sent, content)
 	return s.err
+}
+
+func (s *fakeSender) SendImageFile(_ context.Context, path string) error {
+	s.imageCalls++
+	s.imagePaths = append(s.imagePaths, path)
+	return s.imageErr
 }
 
 type contextCanceledSender struct {
@@ -36,12 +45,28 @@ func (s *contextCanceledSender) SendMarkdown(context.Context, string) error {
 	return context.Canceled
 }
 
+func (s *contextCanceledSender) SendImageFile(context.Context, string) error {
+	s.calls++
+	if s.cancel != nil {
+		s.cancel()
+	}
+	return context.Canceled
+}
+
 type cancelingSender struct {
 	cancel context.CancelFunc
 	calls  int
 }
 
 func (s *cancelingSender) SendMarkdown(_ context.Context, _ string) error {
+	s.calls++
+	if s.calls == 1 {
+		s.cancel()
+	}
+	return nil
+}
+
+func (s *cancelingSender) SendImageFile(_ context.Context, _ string) error {
 	s.calls++
 	if s.calls == 1 {
 		s.cancel()
@@ -198,6 +223,36 @@ func TestDeliveryWorkerSendsAndMarksDone(t *testing.T) {
 	}
 }
 
+func TestDeliveryWorkerSendsScreenshotImageFile(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	sender := &fakeSender{}
+	svc := New(st, sender, nil, Config{})
+	msg, err := st.SaveMessage(ctx, store.Message{QID: "q-image", MsgType: 20001, Content: "hello", ReceivedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("SaveMessage() error = %v", err)
+	}
+	if _, err := st.EnqueueDelivery(ctx, store.DeliveryTask{
+		MessageID:   msg.ID,
+		Kind:        store.DeliveryScreenshot,
+		Payload:     "/tmp/screenshot.jpg",
+		NextAttempt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("EnqueueDelivery() error = %v", err)
+	}
+
+	if err := svc.processDeliveryOnce(ctx); err != nil {
+		t.Fatalf("processDeliveryOnce() error = %v", err)
+	}
+
+	if sender.imageCalls != 1 {
+		t.Fatalf("image calls = %d, want 1", sender.imageCalls)
+	}
+	if len(sender.imagePaths) != 1 || sender.imagePaths[0] != "/tmp/screenshot.jpg" {
+		t.Fatalf("image paths = %#v, want /tmp/screenshot.jpg", sender.imagePaths)
+	}
+}
+
 func TestDeliveryTaskReturningContextCanceledIsReleased(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	st := openTestStore(t)
@@ -326,8 +381,8 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ClaimDeliveryTasks() error = %v", err)
 	}
-	if len(deliveries) != 2 {
-		t.Fatalf("delivery tasks = %d, want original and enriched", len(deliveries))
+	if len(deliveries) != 3 {
+		t.Fatalf("delivery tasks = %d, want original, enriched, and screenshot", len(deliveries))
 	}
 	if deliveries[1].Kind != store.DeliveryEnriched {
 		t.Fatalf("second delivery kind = %q, want %q", deliveries[1].Kind, store.DeliveryEnriched)
@@ -335,6 +390,12 @@ func TestEnrichmentWorkerCreatesEnrichmentAndEnrichedDelivery(t *testing.T) {
 	wantPayload := wecom.BuildEnrichedMarkdown("message-1", "https://example.com", "Example", "summary", "/tmp/example.png").Content
 	if deliveries[1].Payload != wantPayload {
 		t.Fatalf("enriched payload = %q, want %q", deliveries[1].Payload, wantPayload)
+	}
+	if deliveries[2].Kind != store.DeliveryScreenshot {
+		t.Fatalf("third delivery kind = %q, want %q", deliveries[2].Kind, store.DeliveryScreenshot)
+	}
+	if deliveries[2].Payload != "/tmp/example.png" {
+		t.Fatalf("screenshot payload = %q, want /tmp/example.png", deliveries[2].Payload)
 	}
 }
 

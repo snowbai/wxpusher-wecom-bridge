@@ -2,10 +2,15 @@ package wecom
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,6 +118,54 @@ func TestSendPostsMarkdownPayload(t *testing.T) {
 	}
 	if request.Markdown.Content != payload.Content {
 		t.Fatalf("markdown.content = %q, want %q", request.Markdown.Content, payload.Content)
+	}
+}
+
+func TestSendImageFilePostsImagePayload(t *testing.T) {
+	imageBytes := []byte("fake image bytes")
+	imagePath := filepath.Join(t.TempDir(), "screenshot.jpg")
+	if err := os.WriteFile(imagePath, imageBytes, 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		body = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer server.Close()
+
+	if err := New(server.URL, server.Client()).SendImageFile(context.Background(), imagePath); err != nil {
+		t.Fatalf("SendImageFile returned error: %v", err)
+	}
+
+	var request struct {
+		MsgType string `json:"msgtype"`
+		Image   struct {
+			Base64 string `json:"base64"`
+			MD5    string `json:"md5"`
+		} `json:"image"`
+	}
+	if err := json.Unmarshal([]byte(body), &request); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if request.MsgType != "image" {
+		t.Fatalf("msgtype = %q, want image", request.MsgType)
+	}
+	if request.Image.Base64 != base64.StdEncoding.EncodeToString(imageBytes) {
+		t.Fatalf("image base64 = %q, want encoded image bytes", request.Image.Base64)
+	}
+	sum := md5.Sum(imageBytes)
+	if request.Image.MD5 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("image md5 = %q, want %q", request.Image.MD5, hex.EncodeToString(sum[:]))
 	}
 }
 
