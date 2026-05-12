@@ -17,24 +17,33 @@ The Go process only observes frames through CDP and handles storage, WeCom deliv
 
 ## Mac Quick Start
 
-1. Quit Chrome completely.
+1. Create a dedicated Chrome data directory for the bridge.
 
-2. Start the same Chrome profile with local CDP enabled:
+Chrome 136 and newer reject DevTools remote debugging on the default Chrome data directory. Do not use the normal `~/Library/Application Support/Google/Chrome` profile for this sidecar.
+
+```bash
+mkdir -p "$HOME/wxpusher-bridge-chrome-profile"
+```
+
+2. Start Chrome with local CDP enabled and the dedicated data directory:
+
 
 ```bash
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
-  --profile-directory=Default
+  --user-data-dir="$HOME/wxpusher-bridge-chrome-profile"
 ```
 
-3. Confirm CDP is reachable:
+3. In that Chrome window, install or enable the WxPusher extension and bind it once. This dedicated profile is persistent; you do not need to bind again unless the extension identity expires.
+
+4. Confirm CDP is reachable:
 
 ```bash
 curl -sS http://127.0.0.1:9222/json/version
 ```
 
-4. Get the WxPusher extension ID from `chrome://extensions`, then update `config.local.toml`:
+5. Get the WxPusher extension ID from `chrome://extensions`, then update `config.local.toml`:
 
 ```bash
 go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge
@@ -60,7 +69,7 @@ sqlite_path = "./wxpusher-bridge-data/bridge.db"
 screenshot_dir = "./wxpusher-bridge-data/screenshots"
 ```
 
-5. Set the WeCom webhook and run:
+6. Set the WeCom webhook and run:
 
 ```bash
 export WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL='https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'

@@ -10,7 +10,7 @@
     <string>/Applications/Google Chrome.app/Contents/MacOS/Google Chrome</string>
     <string>--remote-debugging-address=127.0.0.1</string>
     <string>--remote-debugging-port=9222</string>
-    <string>--profile-directory=Default</string>
+    <string>--user-data-dir=/Users/hhh/wxpusher-bridge-chrome-profile</string>
     <string>--no-first-run</string>
   </array>
 

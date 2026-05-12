@@ -1,9 +1,9 @@
 # Acceptance Checklist
 
 1. Build the binary with `go build -o bin/wxpusher-bridge ./cmd/wxpusher-bridge`.
-2. Quit Chrome, then start the existing Chrome profile with `--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222`.
+2. Start Chrome with `--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --user-data-dir="$HOME/wxpusher-bridge-chrome-profile"`.
 3. Confirm `curl -sS http://127.0.0.1:9222/json/version` returns Chrome metadata.
-4. Confirm the installed WxPusher extension is enabled and can already receive messages in Chrome.
+4. Confirm the WxPusher extension is installed and bound in this dedicated Chrome data directory.
 5. Copy `configs/config.example.toml` to `config.local.toml`.
 6. Set `receiver.extension_id` to the installed WxPusher extension ID from `chrome://extensions`.
 7. Set `WXPUSHER_BRIDGE_WECOM_WEBHOOK_URL` in the shell or LaunchAgent environment.
